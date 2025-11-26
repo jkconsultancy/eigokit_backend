@@ -36,11 +36,14 @@ ON CONFLICT (id) DO NOTHING;
 -- ============================================================================
 -- TEACHERS
 -- ============================================================================
-INSERT INTO teachers (id, name, email, school_id, created_at) VALUES
-('660e8400-e29b-41d4-a716-446655440001', 'Sarah Johnson', 'sarah.johnson@tokyoenglish.ac.jp', '550e8400-e29b-41d4-a716-446655440001', NOW()),
-('660e8400-e29b-41d4-a716-446655440002', 'Michael Chen', 'michael.chen@tokyoenglish.ac.jp', '550e8400-e29b-41d4-a716-446655440001', NOW()),
-('660e8400-e29b-41d4-a716-446655440003', 'Emma Williams', 'emma.williams@osakakids.jp', '550e8400-e29b-41d4-a716-446655440002', NOW()),
-('660e8400-e29b-41d4-a716-446655440004', 'David Tanaka', 'david.tanaka@yokohamalearning.jp', '550e8400-e29b-41d4-a716-446655440003', NOW())
+-- Note: For seed data, we're creating teachers without invitation tokens
+-- In production, teachers should be added via the School Admin app, which will
+-- automatically generate invitation tokens and send invitation emails
+INSERT INTO teachers (id, name, email, school_id, invitation_status, created_at) VALUES
+('660e8400-e29b-41d4-a716-446655440001', 'Sarah Johnson', 'sarah.johnson@tokyoenglish.ac.jp', '550e8400-e29b-41d4-a716-446655440001', 'accepted', NOW()),
+('660e8400-e29b-41d4-a716-446655440002', 'Michael Chen', 'michael.chen@tokyoenglish.ac.jp', '550e8400-e29b-41d4-a716-446655440001', 'accepted', NOW()),
+('660e8400-e29b-41d4-a716-446655440003', 'Emma Williams', 'emma.williams@osakakids.jp', '550e8400-e29b-41d4-a716-446655440002', 'accepted', NOW()),
+('660e8400-e29b-41d4-a716-446655440004', 'David Tanaka', 'david.tanaka@yokohamalearning.jp', '550e8400-e29b-41d4-a716-446655440003', 'accepted', NOW())
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================================

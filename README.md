@@ -92,15 +92,21 @@ If you encounter `Failed building wheel for pydantic-core` on Python 3.13:
 cp .env.example .env
 ```
 
-3. Fill in your Supabase credentials in `.env`:
-```
-# Get these from your Supabase project dashboard: https://app.supabase.com/project/_/settings/api
-SUPABASE_PROJECT_URL=https://your-project-ref.supabase.co
-SUPABASE_ANON_KEY=your_publishable_key_here  # "Publishable key" in Project Settings > API keys
-SUPABASE_SERVICE_ROLE_KEY=your_secret_key_here  # "Secret key" in Project Settings > API keys
-SUPABASE_JWT_SECRET=your_jwt_signing_key_here  # Optional - found in Project Settings > API > JWT Settings
-ENVIRONMENT=development
-```
+3. Fill in your credentials in `.env`:
+   - Copy `.env.example` to `.env` and fill in the values
+   - See `.env.example` for detailed explanations of all variables
+   - **Required**: Supabase credentials (PROJECT_URL, ANON_KEY, SERVICE_ROLE_KEY)
+   - **Optional**: Email service credentials (RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_FORWARDING_URL) for teacher invitations
+   
+   Quick reference:
+   ```
+   SUPABASE_PROJECT_URL=https://your-project-ref.supabase.co
+   SUPABASE_ANON_KEY=your_publishable_key_here
+   SUPABASE_SERVICE_ROLE_KEY=your_secret_key_here
+   RESEND_API_KEY=re_your_api_key_here  # Optional - for teacher invitations
+   RESEND_FROM_EMAIL=onboarding@resend.dev  # Optional
+   RESEND_FORWARDING_URL=http://localhost:5175  # Optional - frontend base URL for invitation links (e.g. teacher app)
+   ```
 
 4. Set up your Supabase database schema:
    
@@ -179,19 +185,36 @@ This backend can be deployed to services like:
 
 Make sure to set environment variables in your deployment platform.
 
+## Email Service Setup
+
+For teacher invitation emails, configure an email service (recommended: **Resend**).
+
+**Quick Setup:**
+1. Sign up at https://resend.com and get your API key
+2. Add to `.env`: `RESEND_API_KEY=your_key`, `RESEND_FROM_EMAIL=onboarding@resend.dev`, `RESEND_FORWARDING_URL=http://localhost:5175`
+3. If using a new database: `schema.sql` already includes invitation fields
+4. If using an existing database: Run `migration_add_teacher_invitations.sql` to add invitation fields
+
+See `EMAIL_SERVICE_SETUP.md` for detailed instructions and alternative services.
+
+**Note:** Email is optional. Without it, teachers can still be created but no invitation emails will be sent.
+
 ## Database Setup Files
 
 - **schema.sql**: Creates all required database tables, indexes, and basic RLS policies
 - **migration_add_users_table.sql**: Migration script to add the users table (run this if you set up the database before the users table was added)
 - **migration_add_school_locations.sql**: Migration script to add school locations support (run this if you have an existing database - see `MIGRATION_GUIDE_SCHOOL_LOCATIONS.md`)
+- **migration_add_teacher_invitations.sql**: Migration script to add teacher invitation fields (only needed if you created the database before teacher invitations were added to schema.sql)
 - **seed.sql**: Populates the database with mock data for testing (3 schools, 4 teachers, 13 students, etc.)
 - **MIGRATION_GUIDE_SCHOOL_LOCATIONS.md**: Detailed guide for migrating existing databases to support school locations
+- **EMAIL_SERVICE_SETUP.md**: Guide for setting up email service for teacher invitations
 
 **Important**: 
-1. Run `schema.sql` first to create all tables
+1. Run `schema.sql` first to create all tables (includes teacher invitation fields)
 2. If you get an error about the `users` table not existing, run `migration_add_users_table.sql`
 3. If you have an existing database and want to add school locations support, run `migration_add_school_locations.sql` (see `MIGRATION_GUIDE_SCHOOL_LOCATIONS.md`)
-4. Then run `seed.sql` to populate with mock data
+4. If you have an existing database created before teacher invitations were added, run `migration_add_teacher_invitations.sql` to add invitation fields
+5. Then run `seed.sql` to populate with mock data
 
 **Note**: The `users` table links to Supabase Auth's `auth.users` table. Make sure you have created at least one user in Supabase Auth before inserting into the `users` table.
 

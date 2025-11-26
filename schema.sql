@@ -41,11 +41,23 @@ CREATE TABLE IF NOT EXISTS teachers (
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
     school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    -- Teacher invitation fields (for email-based invitations)
+    invitation_token VARCHAR(255) UNIQUE,
+    invitation_sent_at TIMESTAMP WITH TIME ZONE,
+    invitation_status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'accepted', 'expired'
+    invitation_expires_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_teachers_school_id ON teachers(school_id);
+CREATE INDEX IF NOT EXISTS idx_teachers_invitation_token ON teachers(invitation_token) WHERE invitation_token IS NOT NULL;
+
+-- Add comments for invitation fields
+COMMENT ON COLUMN teachers.invitation_token IS 'Unique token for teacher invitation email';
+COMMENT ON COLUMN teachers.invitation_sent_at IS 'Timestamp when invitation was sent';
+COMMENT ON COLUMN teachers.invitation_status IS 'Status of invitation: pending, accepted, expired';
+COMMENT ON COLUMN teachers.invitation_expires_at IS 'Expiration timestamp for invitation (typically 7 days)';
 
 -- ============================================================================
 -- SCHOOL LOCATIONS

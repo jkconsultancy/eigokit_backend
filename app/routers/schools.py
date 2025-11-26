@@ -191,20 +191,140 @@ async def get_school_locations(school_id: str):
 
 @router.post("/{school_id}/teachers")
 async def add_teacher(school_id: str, name: str = Form(...), email: str = Form(...), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
-    """Add a teacher to school"""
+    """Add a teacher to school and send invitation email"""
+    import secrets
+    from datetime import datetime, timedelta
+    from app.services.email import email_service
+    
     # Verify user's school_id matches
     user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
     if not user_data.data or user_data.data.get("school_id") != school_id:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Get school name for email
+    school = supabase_admin.table("schools").select("name").eq("id", school_id).single().execute()
+    school_name = school.data.get("name", "the school") if school.data else "the school"
+    
+    # Get inviter name
+    inviter_data = supabase_admin.table("users").select("email").eq("id", user.user.id).single().execute()
+    inviter_email = inviter_data.data.get("email", "") if inviter_data.data else ""
+    
+    # Generate unique invitation token
+    invitation_token = secrets.token_urlsafe(32)
+    invitation_expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+    
     teacher_data = {
         "name": name,
         "email": email,
-        "school_id": school_id
+        "school_id": school_id,
+        "invitation_token": invitation_token,
+        "invitation_sent_at": datetime.utcnow().isoformat(),
+        "invitation_status": "pending",
+        "invitation_expires_at": invitation_expires_at
     }
     
     result = supabase_admin.table("teachers").insert(teacher_data).execute()
-    return {"teacher_id": result.data[0]["id"], "message": "Teacher added", "teacher": result.data[0]}
+    teacher_id = result.data[0]["id"]
+    
+    # Send invitation email (non-blocking - don't fail if email fails)
+    try:
+        email_sent = email_service.send_teacher_invitation(
+            teacher_email=email,
+            teacher_name=name,
+            school_name=school_name,
+            invitation_token=invitation_token,
+            inviter_name=inviter_email
+        )
+        if not email_sent:
+            # Log warning but don't fail the request
+            print(f"Warning: Failed to send invitation email to {email}, but teacher was created")
+    except Exception as e:
+        # Log error but don't fail the request
+        print(f"Error sending invitation email to {email}: {str(e)}")
+    
+    return {
+        "teacher_id": teacher_id,
+        "message": "Teacher added and invitation email sent",
+        "teacher": result.data[0],
+        "invitation_sent": True
+    }
+
+
+@router.post("/{school_id}/teachers/{teacher_id}/resend-invitation")
+async def resend_teacher_invitation(school_id: str, teacher_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
+    """Resend invitation email to a teacher"""
+    import secrets
+    from datetime import datetime, timedelta
+    from app.services.email import email_service
+    
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get teacher
+    teacher_result = supabase_admin.table("teachers").select("*").eq("id", teacher_id).eq("school_id", school_id).single().execute()
+    if not teacher_result.data:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    
+    teacher = teacher_result.data
+    
+    # Get school name for email
+    school = supabase_admin.table("schools").select("name").eq("id", school_id).single().execute()
+    school_name = school.data.get("name", "the school") if school.data else "the school"
+    
+    # Get inviter name
+    inviter_data = supabase_admin.table("users").select("email").eq("id", user.user.id).single().execute()
+    inviter_email = inviter_data.data.get("email", "") if inviter_data.data else ""
+    
+    # Generate new invitation token
+    invitation_token = secrets.token_urlsafe(32)
+    invitation_expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+    
+    # Update teacher with new invitation token
+    supabase_admin.table("teachers").update({
+        "invitation_token": invitation_token,
+        "invitation_sent_at": datetime.utcnow().isoformat(),
+        "invitation_status": "pending",
+        "invitation_expires_at": invitation_expires_at
+    }).eq("id", teacher_id).execute()
+    
+    # Send invitation email
+    try:
+        email_sent = email_service.send_teacher_invitation(
+            teacher_email=teacher["email"],
+            teacher_name=teacher["name"],
+            school_name=school_name,
+            invitation_token=invitation_token,
+            inviter_name=inviter_email
+        )
+        if not email_sent:
+            # Check if email service is configured
+            if not email_service.resend:
+                return {
+                    "message": "Invitation token updated, but email service is not configured. Please set RESEND_API_KEY in your .env file.",
+                    "invitation_sent": False,
+                    "error": "email_service_not_configured"
+                }
+            return {
+                "message": "Invitation token updated, but email failed to send. Please check your email service configuration.",
+                "invitation_sent": False,
+                "error": "email_send_failed"
+            }
+        return {
+            "message": "Invitation email resent successfully",
+            "invitation_sent": True,
+            "invitation_token": invitation_token  # Include token for manual sharing if needed
+        }
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Error resending invitation email to {teacher['email']}: {error_msg}")
+        return {
+            "message": f"Invitation token updated, but email failed to send: {error_msg}",
+            "invitation_sent": False,
+            "error": "email_exception",
+            "error_details": error_msg
+        }
 
 
 @router.put("/{school_id}/teachers/{teacher_id}")

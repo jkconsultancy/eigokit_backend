@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Form
+from fastapi import APIRouter, HTTPException, Depends, Form, Query
 from app.database import supabase, supabase_admin
 from app.models import StudentRegistration, StudentSignIn
 from app.auth import get_current_user
@@ -71,9 +71,100 @@ async def signin_teacher(email: str, password: str):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
+@router.post("/teacher/accept-invitation")
+async def accept_teacher_invitation(
+    token: str = Query(..., description="Invitation token from email"),
+    password: str = Form(...),
+    name: Optional[str] = Form(None)
+):
+    """Accept a teacher invitation and create account"""
+    from datetime import datetime
+    
+    # Find teacher by invitation token
+    teacher_result = supabase_admin.table("teachers").select("*").eq("invitation_token", token).single().execute()
+    
+    if not teacher_result.data:
+        raise HTTPException(status_code=404, detail="Invalid invitation token")
+    
+    teacher = teacher_result.data
+    
+    # Check if invitation is expired
+    if teacher.get("invitation_expires_at"):
+        expires_at = datetime.fromisoformat(teacher["invitation_expires_at"].replace("Z", "+00:00"))
+        if datetime.utcnow().replace(tzinfo=expires_at.tzinfo) > expires_at:
+            raise HTTPException(status_code=400, detail="Invitation has expired")
+    
+    # Check if already accepted
+    if teacher.get("invitation_status") == "accepted":
+        raise HTTPException(status_code=400, detail="Invitation has already been accepted")
+    
+    # Create auth user
+    try:
+        response = supabase.auth.sign_up({
+            "email": teacher["email"],
+            "password": password
+        })
+        
+        if not response.user:
+            raise HTTPException(status_code=400, detail="Failed to create user account")
+        
+        user_id = response.user.id
+        
+        # Create user record with role
+        supabase_admin.table("users").insert({
+            "id": user_id,
+            "email": teacher["email"],
+            "role": "teacher",
+            "school_id": teacher["school_id"]
+        }).execute()
+        
+        # Update teacher record: link to auth user and mark as accepted
+        # Note: We can't change the primary key, so we'll keep the original teacher.id
+        # but link it to the user via a separate field if needed, or just mark as accepted
+        update_data = {
+            "invitation_status": "accepted",
+        }
+        if name and name != teacher["name"]:
+            update_data["name"] = name
+        
+        # If teacher table has a user_id field, link it. Otherwise, the email match is sufficient
+        supabase_admin.table("teachers").update(update_data).eq("id", teacher["id"]).execute()
+        
+        # Also update the teacher record to link with auth user if there's a user_id field
+        # For now, we rely on email matching between teachers and users tables
+        
+        return {
+            "message": "Invitation accepted successfully",
+            "access_token": response.session.access_token if response.session else None,
+            "user_id": user_id,
+            "email_confirmation_required": True if not response.session else False
+        }
+    except Exception as e:
+        # If user already exists, try to sign in instead
+        if "already registered" in str(e).lower() or "already exists" in str(e).lower():
+            try:
+                signin_response = supabase.auth.sign_in_with_password({
+                    "email": teacher["email"],
+                    "password": password
+                })
+                # Update invitation status
+                supabase_admin.table("teachers").update({
+                    "invitation_status": "accepted"
+                }).eq("id", teacher["id"]).execute()
+                
+                return {
+                    "message": "Account already exists. Signed in successfully.",
+                    "access_token": signin_response.session.access_token,
+                    "user_id": signin_response.user.id
+                }
+            except:
+                raise HTTPException(status_code=400, detail="Account exists but password is incorrect")
+        raise HTTPException(status_code=400, detail=f"Failed to accept invitation: {str(e)}")
+
+
 @router.post("/teacher/signup")
 async def signup_teacher(email: str, password: str, name: str, school_id: str):
-    """Teacher sign-up"""
+    """Teacher sign-up (legacy - use accept-invitation instead)"""
     try:
         response = supabase.auth.sign_up({
             "email": email,
