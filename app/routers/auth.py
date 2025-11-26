@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, Form, Query
 from app.database import supabase, supabase_admin
+from app.config import settings
 from app.models import StudentRegistration, StudentSignIn
 from app.auth import get_current_user
 from typing import Optional
@@ -309,4 +310,49 @@ async def signin_school_admin(email: str = Form(...), password: str = Form(...))
 async def get_current_user_info(user = Depends(get_current_user)):
     """Get current authenticated user info"""
     return {"user": user.user}
+
+
+@router.post("/password-reset-request")
+async def password_reset_request(
+    email: str = Form(...),
+    app: str = Form(..., description="App requesting reset: 'platform_admin' | 'school_admin' | 'teacher'"),
+):
+    """
+    Request a password reset email for any Supabase-authenticated account.
+
+    This works for:
+    - Platform admins
+    - School admins
+    - Teachers
+
+    Students use icon-based sign-in and do not have passwords; they should ask a teacher
+    to reset their registration instead.
+    """
+    # Choose redirect URL based on which app is requesting the reset
+    redirect_url = None
+    if app == "platform_admin":
+        redirect_url = settings.password_reset_redirect_url_platform_admin
+    elif app == "school_admin":
+        redirect_url = settings.password_reset_redirect_url_school_admin
+    elif app == "teacher":
+        redirect_url = settings.password_reset_redirect_url_teacher
+
+    # Fallback: if no specific URL set, let Supabase use its configured default
+    options = {"redirect_to": redirect_url} if redirect_url else None
+
+    try:
+        if options:
+            supabase.auth.reset_password_for_email(email, options=options)
+        else:
+            supabase.auth.reset_password_for_email(email)
+    except Exception:
+        # Don't leak whether the email exists
+        raise HTTPException(
+            status_code=400,
+            detail="Unable to process password reset request. Please try again later.",
+        )
+
+    return {
+        "message": "If an account with that email exists, a password reset email has been sent."
+    }
 

@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     # Populated from RESEND_FORWARDING_URL (preferred) or APP_URL (legacy)
     resend_forwarding_url: Optional[str] = None
 
+    # Password reset redirect URLs per app (used for Supabase password reset links)
+    password_reset_redirect_url_platform_admin: Optional[str] = None
+    password_reset_redirect_url_school_admin: Optional[str] = None
+    password_reset_redirect_url_teacher: Optional[str] = None
+
     class Config:
         env_file = ".env"
         case_sensitive = False

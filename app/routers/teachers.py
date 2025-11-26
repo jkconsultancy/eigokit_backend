@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
-from app.database import supabase
+from fastapi import APIRouter, Depends, HTTPException, Form
+from app.database import supabase, supabase_admin
 from app.models import SurveyQuestion, Vocabulary, Grammar
 from app.auth import get_current_user
-from typing import List
+from typing import List, Optional
 
 router = APIRouter()
 
@@ -20,7 +20,12 @@ async def get_teacher_students(teacher_id: str):
 
 
 @router.post("/{teacher_id}/students")
-async def add_student(teacher_id: str, name: str, class_id: str):
+async def add_student(
+    teacher_id: str,
+    name: str = Form(...),
+    class_id: str = Form(...),
+    icon_sequence: Optional[str] = Form(None),
+):
     """Add a new student to a class"""
     # Verify teacher owns the class
     class_check = supabase.table("classes").select("teacher_id").eq("id", class_id).single().execute()
@@ -30,11 +35,22 @@ async def add_student(teacher_id: str, name: str, class_id: str):
     student_data = {
         "name": name,
         "class_id": class_id,
-        "registration_status": "pending"
+        "registration_status": "pending",
     }
-    
+
+    # Optional icon sequence support (same format as school admin flow)
+    if icon_sequence:
+        try:
+            icon_array = [int(x.strip()) for x in icon_sequence.split(",")]
+            student_data["icon_sequence"] = icon_array
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid icon_sequence format. Use comma-separated integers.",
+            )
+
     result = supabase.table("students").insert(student_data).execute()
-    return {"student_id": result.data[0]["id"], "message": "Student added"}
+    return {"student_id": result.data[0]["id"], "message": "Student added", "student": result.data[0]}
 
 
 @router.put("/students/{student_id}")
@@ -191,4 +207,58 @@ async def get_teacher_dashboard(teacher_id: str):
         "survey_responses": surveys.data,
         "game_sessions": games.data
     }
+
+
+@router.get("/{teacher_id}/classes")
+async def get_teacher_classes(teacher_id: str):
+    """Get all classes for a teacher"""
+    classes = supabase.table("classes").select("*").eq("teacher_id", teacher_id).execute()
+    return {"classes": classes.data}
+
+
+@router.post("/{teacher_id}/classes")
+async def add_teacher_class(teacher_id: str, name: str = Form(...)):
+    """Add a new class for this teacher"""
+    # Look up teacher's school_id so we can create the class in the same school
+    teacher = supabase_admin.table("teachers").select("school_id").eq("id", teacher_id).single().execute()
+    if not teacher.data:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    class_data = {
+        "name": name,
+        "teacher_id": teacher_id,
+        "school_id": teacher.data["school_id"],
+    }
+    result = supabase_admin.table("classes").insert(class_data).execute()
+    return {"class_id": result.data[0]["id"], "class": result.data[0]}
+
+
+@router.put("/{teacher_id}/classes/{class_id}")
+async def update_teacher_class(teacher_id: str, class_id: str, name: Optional[str] = Form(None)):
+    """Update an existing class for this teacher"""
+    class_check = supabase_admin.table("classes").select("teacher_id").eq("id", class_id).single().execute()
+    if not class_check.data or class_check.data["teacher_id"] != teacher_id:
+        raise HTTPException(status_code=404, detail="Class not found")
+
+    update_data = {}
+    if name is not None:
+        update_data["name"] = name
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    result = supabase_admin.table("classes").update(update_data).eq("id", class_id).execute()
+    return {"message": "Class updated", "class": result.data[0]}
+
+
+@router.delete("/{teacher_id}/classes/{class_id}")
+async def delete_teacher_class(teacher_id: str, class_id: str):
+    """Delete a class owned by this teacher"""
+    class_check = supabase_admin.table("classes").select("teacher_id").eq("id", class_id).single().execute()
+    if not class_check.data or class_check.data["teacher_id"] != teacher_id:
+        raise HTTPException(status_code=404, detail="Class not found")
+
+    supabase_admin.table("classes").delete().eq("id", class_id).execute()
+    return {"message": "Class deleted"}
+
 

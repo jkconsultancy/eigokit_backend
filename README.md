@@ -97,6 +97,7 @@ cp .env.example .env
    - See `.env.example` for detailed explanations of all variables
    - **Required**: Supabase credentials (PROJECT_URL, ANON_KEY, SERVICE_ROLE_KEY)
    - **Optional**: Email service credentials (RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_FORWARDING_URL) for teacher invitations
+   - **Optional**: Per-app password reset redirect URLs (used for Supabase password reset links)
    
    Quick reference:
    ```
@@ -106,6 +107,13 @@ cp .env.example .env
    RESEND_API_KEY=re_your_api_key_here  # Optional - for teacher invitations
    RESEND_FROM_EMAIL=onboarding@resend.dev  # Optional
    RESEND_FORWARDING_URL=http://localhost:5175  # Optional - frontend base URL for invitation links (e.g. teacher app)
+
+   # Optional: per-app password reset redirect URLs
+   # These URLs are passed to Supabase as the redirect_to for password reset links.
+   # Use the appropriate frontend URL for each role:
+   PASSWORD_RESET_REDIRECT_URL_PLATFORM_ADMIN=http://localhost:5174/auth/reset-password
+   PASSWORD_RESET_REDIRECT_URL_SCHOOL_ADMIN=http://localhost:5172/auth/reset-password
+   PASSWORD_RESET_REDIRECT_URL_TEACHER=http://localhost:5175/auth/reset-password
    ```
 
 4. Set up your Supabase database schema:
