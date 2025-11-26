@@ -1,0 +1,27 @@
+# Environment variables
+.env
+
+# Python virtual environment
+.venv
+
+# Build files
+dist
+
+# Package lock files
+package-lock.json
+package-lock.json.lock
+package-lock.json.lock.lock
+
+# OS
+.DS_Store
+.vscode
+.idea
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.mypy_cache
