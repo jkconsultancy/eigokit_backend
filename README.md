@@ -96,24 +96,23 @@ cp .env.example .env
    - Copy `.env.example` to `.env` and fill in the values
    - See `.env.example` for detailed explanations of all variables
    - **Required**: Supabase credentials (PROJECT_URL, ANON_KEY, SERVICE_ROLE_KEY)
-   - **Optional**: Email service credentials (RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_FORWARDING_URL) for teacher invitations
-   - **Optional**: Per-app password reset redirect URLs (used for Supabase password reset links)
+   - **Optional**: Email service credentials (RESEND_API_KEY, RESEND_FROM_EMAIL) for invitations
+   - **Optional**: Frontend base URLs for password reset redirects (used for Supabase password reset links)
    
    Quick reference:
    ```
    SUPABASE_PROJECT_URL=https://your-project-ref.supabase.co
    SUPABASE_ANON_KEY=your_publishable_key_here
    SUPABASE_SERVICE_ROLE_KEY=your_secret_key_here
-   RESEND_API_KEY=re_your_api_key_here  # Optional - for teacher invitations
+   RESEND_API_KEY=re_your_api_key_here  # Optional - for invitations
    RESEND_FROM_EMAIL=onboarding@resend.dev  # Optional
-   RESEND_FORWARDING_URL=http://localhost:5175  # Optional - frontend base URL for invitation links (e.g. teacher app)
 
-   # Optional: per-app password reset redirect URLs
-   # These URLs are passed to Supabase as the redirect_to for password reset links.
-   # Use the appropriate frontend URL for each role:
-   PASSWORD_RESET_REDIRECT_URL_PLATFORM_ADMIN=http://localhost:5174/auth/reset-password
-   PASSWORD_RESET_REDIRECT_URL_SCHOOL_ADMIN=http://localhost:5172/auth/reset-password
-   PASSWORD_RESET_REDIRECT_URL_TEACHER=http://localhost:5175/auth/reset-password
+   # Optional: Frontend base URLs for password reset redirects
+   # These are base URLs only (no paths). The backend will append /auth/reset-password automatically.
+   # Use the appropriate frontend base URL for each role:
+   FRONTEND_ADMINS_URL=http://localhost:5173  # Platform admin frontend base URL
+   FRONTEND_SCHOOLS_URL=http://localhost:5174  # School admin frontend base URL
+   FRONTEND_TEACHERS_URL=http://localhost:5175  # Teacher frontend base URL
    ```
 
 4. Set up your Supabase database schema:
@@ -150,6 +149,179 @@ uvicorn app.main:app --reload --port 8000
 The API will be available at `http://localhost:8000`
 
 API documentation (Swagger UI) will be available at `http://localhost:8000/docs`
+
+## Running Tests
+
+The backend includes unit tests using `pytest`. Test dependencies are included in `requirements.txt`.
+
+**⚠️ IMPORTANT:** Always run tests from within the virtual environment. Running tests outside the venv will cause import errors.
+
+```bash
+# 1. Navigate to the backend directory
+cd eigokit_backend
+
+# 2. Activate the virtual environment (REQUIRED)
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# 3. Verify you're using the venv Python
+which python  # Should show: .../eigokit_backend/.venv/bin/python
+
+# 4. Install test dependencies (if not already installed)
+pip install -r requirements.txt
+
+# 5. Run tests
+pytest
+```
+
+**Note:** Tests use mocks for external dependencies (Supabase, pydantic-settings) so they can run without requiring all production dependencies to be installed.
+
+### Running All Tests
+
+```bash
+# Make sure you're in the virtual environment first!
+source .venv/bin/activate
+
+# Run all tests
+pytest
+
+# Or use python -m pytest to ensure correct Python environment
+python -m pytest
+
+# Run tests with verbose output
+pytest -v
+
+# Run tests with coverage report
+pytest --cov=app --cov-report=html
+```
+
+### Running Specific Tests
+
+```bash
+# Run a specific test file
+pytest tests/test_schools_teachers.py
+
+# Run a specific test function
+pytest tests/test_schools_teachers.py::test_get_school_teachers_with_accepted_teacher
+
+# Run tests matching a pattern
+pytest -k "teacher"
+```
+
+### Test Structure
+
+Tests are located in the `tests/` directory:
+- `tests/test_schools_teachers.py` - Tests for school teacher management endpoints
+
+### Writing New Tests
+
+When writing new tests:
+1. Create test files in the `tests/` directory
+2. Use `pytest` fixtures and `pytest-mock` for mocking Supabase calls
+3. Follow the existing test patterns in `test_schools_teachers.py`
+4. Use descriptive test function names starting with `test_`
+
+Example test structure:
+```python
+import pytest
+from fastapi.testclient import TestClient
+
+def test_endpoint_name(client, mocker):
+    """Test description"""
+    # Mock Supabase calls
+    mock_supabase = mocker.patch('app.routers.module_name.supabase_admin')
+    # ... setup mocks ...
+    
+    # Make request (client is provided by conftest.py fixture)
+    response = client.get("/api/endpoint")
+    
+    # Assertions
+    assert response.status_code == 200
+    assert response.json() == expected_data
+```
+
+**Note:** Use the `client` fixture from `conftest.py` instead of creating `TestClient(app)` directly. This ensures all mocks are properly set up before the app is imported.
+
+### Test Environment
+
+Tests use mocks for Supabase database calls, so they don't require a live database connection. This makes tests:
+- Fast to run
+- Independent of external services
+- Safe to run in CI/CD pipelines
+
+**Note:** The `conftest.py` file automatically mocks the Supabase and pydantic-settings modules before any test imports happen. This prevents import errors when these packages aren't installed in the test environment. The mocks are set up at the module level, so all tests automatically use mocked dependencies.
+
+**Note on deprecation warnings:** You may see a deprecation warning from `httpx` about the `app` shortcut. This is harmless and comes from httpx's internal usage. It doesn't affect test functionality and can be safely ignored. To suppress it, you can run tests with: `pytest -W ignore::DeprecationWarning`
+
+### Troubleshooting Test Errors
+
+#### Error: `fixture 'mocker' not found`
+
+**Root Cause:** The `mocker` fixture is provided by the `pytest-mock` plugin. This error occurs when:
+- Tests are run outside the virtual environment
+- `pytest-mock` is not installed
+- pytest is using a different Python environment
+
+**Solution:**
+1. **Activate the virtual environment (REQUIRED):**
+   ```bash
+   cd eigokit_backend
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+2. **Verify you're using the venv Python:**
+   ```bash
+   which python
+   # Should show: .../eigokit_backend/.venv/bin/python
+   ```
+
+3. **Install test dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Verify pytest-mock is installed:**
+   ```bash
+   pip list | grep pytest-mock
+   # Should show: pytest-mock 3.15.1 (or similar)
+   ```
+
+5. **Run tests using the venv Python:**
+   ```bash
+   python -m pytest tests/ -v
+   # NOT: pytest tests/ -v (might use system pytest)
+   ```
+
+6. **Verify mocker fixture is available:**
+   ```bash
+   python -m pytest --fixtures tests/ | grep mocker
+   # Should show: mocker -- .../pytest_mock/plugin.py
+   ```
+
+#### Other Common Errors
+
+1. **"ModuleNotFoundError" for supabase or pydantic_settings:**
+   - This should be handled by `conftest.py` mocks
+   - Make sure `conftest.py` is in the `tests/` directory
+   - Try running with: `python -m pytest tests/ -v` to ensure the correct Python environment is used
+
+2. **Database connection errors:**
+   - Tests use mocks, so this shouldn't happen
+   - Check that `conftest.py` is properly mocking `app.database.supabase` and `app.database.supabase_admin`
+
+3. **Clear pytest cache:**
+   ```bash
+   rm -rf .pytest_cache
+   python -m pytest tests/ -v
+   ```
+
+#### Diagnostic Tools
+
+Run the diagnostic script to check your environment:
+```bash
+python tests/check_pytest_setup.py
+```
+
+See `tests/README_TROUBLESHOOTING.md` for more detailed troubleshooting information.
 
 ## Database Schema
 
@@ -199,7 +371,7 @@ For teacher invitation emails, configure an email service (recommended: **Resend
 
 **Quick Setup:**
 1. Sign up at https://resend.com and get your API key
-2. Add to `.env`: `RESEND_API_KEY=your_key`, `RESEND_FROM_EMAIL=onboarding@resend.dev`, `RESEND_FORWARDING_URL=http://localhost:5175`
+2. Add to `.env`: `RESEND_API_KEY=your_key`, `RESEND_FROM_EMAIL=onboarding@resend.dev`
 3. If using a new database: `schema.sql` already includes invitation fields
 4. If using an existing database: Run `migration_add_teacher_invitations.sql` to add invitation fields
 

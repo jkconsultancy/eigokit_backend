@@ -13,18 +13,16 @@ class Settings(BaseSettings):
     # Email service configuration (Resend)
     resend_api_key: Optional[str] = None  # Resend API key for sending emails
     resend_from_email: Optional[str] = None  # From email address (must be verified in Resend)
-    # Base URL of the frontend app used in email links (e.g. teacher app)
-    # Populated from RESEND_FORWARDING_URL (preferred) or APP_URL (legacy)
-    resend_forwarding_url: Optional[str] = None
 
-    # Password reset redirect URLs per app (used for Supabase password reset links)
-    password_reset_redirect_url_platform_admin: Optional[str] = None
-    password_reset_redirect_url_school_admin: Optional[str] = None
-    password_reset_redirect_url_teacher: Optional[str] = None
+    # Frontend base URLs for each app (used to construct password reset redirect URLs)
+    frontend_admins_url: Optional[str] = None  # Platform admin frontend base URL
+    frontend_schools_url: Optional[str] = None  # School admin frontend base URL
+    frontend_teachers_url: Optional[str] = None  # Teacher frontend base URL
 
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # Ignore extra fields in .env (like deprecated RESEND_FORWARDING_URL)
 
 
 settings = Settings()

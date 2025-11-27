@@ -95,8 +95,9 @@ async def add_vocabulary(teacher_id: str, vocab: Vocabulary):
     """Add vocabulary to class or student"""
     vocab_data = {
         "teacher_id": teacher_id,
-        "class_id": vocab.class_id,
-        "student_id": vocab.student_id,
+        # Convert empty strings to NULL for optional UUID columns
+        "class_id": vocab.class_id or None,
+        "student_id": vocab.student_id or None,
         "english_word": vocab.english_word,
         "japanese_word": vocab.japanese_word,
         "example_sentence": vocab.example_sentence,
@@ -105,7 +106,7 @@ async def add_vocabulary(teacher_id: str, vocab: Vocabulary):
         "scheduled_date": vocab.scheduled_date.isoformat() if vocab.scheduled_date else None
     }
     
-    result = supabase.table("vocabulary").insert(vocab_data).execute()
+    result = supabase_admin.table("vocabulary").insert(vocab_data).execute()
     return {"vocab_id": result.data[0]["id"], "message": "Vocabulary added"}
 
 
@@ -114,8 +115,9 @@ async def add_grammar(teacher_id: str, grammar: Grammar):
     """Add grammar rule to class or student"""
     grammar_data = {
         "teacher_id": teacher_id,
-        "class_id": grammar.class_id,
-        "student_id": grammar.student_id,
+        # Convert empty strings to NULL for optional UUID columns
+        "class_id": grammar.class_id or None,
+        "student_id": grammar.student_id or None,
         "rule_name": grammar.rule_name,
         "rule_description": grammar.rule_description,
         "examples": grammar.examples,
@@ -123,7 +125,7 @@ async def add_grammar(teacher_id: str, grammar: Grammar):
         "scheduled_date": grammar.scheduled_date.isoformat() if grammar.scheduled_date else None
     }
     
-    result = supabase.table("grammar").insert(grammar_data).execute()
+    result = supabase_admin.table("grammar").insert(grammar_data).execute()
     return {"grammar_id": result.data[0]["id"], "message": "Grammar added"}
 
 
@@ -176,6 +178,74 @@ async def get_survey_questions(teacher_id: str, class_id: str = None):
     return {"questions": result.data}
 
 
+@router.get("/{teacher_id}/schools")
+async def get_teacher_schools(teacher_id: str):
+    """Get all schools a teacher is associated with, including pending invitations"""
+    from datetime import datetime
+    
+    # Get all teacher_schools relationships for this teacher
+    teacher_schools = supabase_admin.table("teacher_schools").select("*").eq("teacher_id", teacher_id).execute()
+    
+    if not teacher_schools.data:
+        return {"schools": [], "pending_invitations": []}
+    
+    # Get all school IDs
+    school_ids = [ts["school_id"] for ts in teacher_schools.data]
+    
+    # Get school details
+    schools_data = supabase_admin.table("schools").select("*").in_("id", school_ids).execute()
+    
+    # Create a map of school_id -> school data
+    schools_map = {s["id"]: s for s in schools_data.data}
+    
+    schools_list = []
+    pending_invitations = []
+    
+    for ts in teacher_schools.data:
+        school_id = ts["school_id"]
+        school = schools_map.get(school_id)
+        
+        # Skip if school record doesn't exist
+        if not school:
+            continue
+        
+        invitation_status = ts.get("invitation_status", "pending")
+        invitation_expires_at = ts.get("invitation_expires_at")
+        
+        school_info = {
+            "school_id": school.get("id"),
+            "school_name": school.get("name"),
+            "invitation_status": invitation_status,
+            "invitation_token": ts.get("invitation_token"),
+            "invitation_expires_at": invitation_expires_at,
+            "invitation_sent_at": ts.get("invitation_sent_at")
+        }
+        
+        # Check if invitation is expired
+        is_expired = False
+        if invitation_expires_at and invitation_status == "pending":
+            try:
+                expires_at = datetime.fromisoformat(invitation_expires_at.replace("Z", "+00:00"))
+                if datetime.utcnow().replace(tzinfo=expires_at.tzinfo) > expires_at:
+                    is_expired = True
+                    school_info["invitation_status"] = "expired"
+            except:
+                pass
+        
+        if invitation_status == "accepted":
+            schools_list.append(school_info)
+        elif invitation_status == "pending" and not is_expired:
+            pending_invitations.append(school_info)
+        elif is_expired or invitation_status == "expired":
+            school_info["invitation_status"] = "expired"
+            pending_invitations.append(school_info)
+    
+    return {
+        "schools": schools_list,
+        "pending_invitations": pending_invitations
+    }
+
+
 @router.get("/{teacher_id}/dashboard")
 async def get_teacher_dashboard(teacher_id: str):
     """Get teacher dashboard metrics"""
@@ -219,15 +289,16 @@ async def get_teacher_classes(teacher_id: str):
 @router.post("/{teacher_id}/classes")
 async def add_teacher_class(teacher_id: str, name: str = Form(...)):
     """Add a new class for this teacher"""
-    # Look up teacher's school_id so we can create the class in the same school
-    teacher = supabase_admin.table("teachers").select("school_id").eq("id", teacher_id).single().execute()
-    if not teacher.data:
-        raise HTTPException(status_code=404, detail="Teacher not found")
+    # Look up teacher's school_id from teacher_schools (get first school they're associated with)
+    # Note: For multi-school support, we may need to pass school_id as a parameter
+    teacher_school = supabase_admin.table("teacher_schools").select("school_id").eq("teacher_id", teacher_id).limit(1).single().execute()
+    if not teacher_school.data:
+        raise HTTPException(status_code=404, detail="Teacher not found or not associated with any school")
 
     class_data = {
         "name": name,
         "teacher_id": teacher_id,
-        "school_id": teacher.data["school_id"],
+        "school_id": teacher_school.data["school_id"],
     }
     result = supabase_admin.table("classes").insert(class_data).execute()
     return {"class_id": result.data[0]["id"], "class": result.data[0]}

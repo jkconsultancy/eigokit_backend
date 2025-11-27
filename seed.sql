@@ -36,15 +36,31 @@ ON CONFLICT (id) DO NOTHING;
 -- ============================================================================
 -- TEACHERS
 -- ============================================================================
--- Note: For seed data, we're creating teachers without invitation tokens
+-- Note: Teachers are now stored without school_id (multi-school support)
+-- School associations are managed via the teacher_schools junction table
+INSERT INTO teachers (id, name, email, created_at) VALUES
+('660e8400-e29b-41d4-a716-446655440001', 'Sarah Johnson', 'sarah.johnson@tokyoenglish.ac.jp', NOW()),
+('660e8400-e29b-41d4-a716-446655440002', 'Michael Chen', 'michael.chen@tokyoenglish.ac.jp', NOW()),
+('660e8400-e29b-41d4-a716-446655440003', 'Emma Williams', 'emma.williams@osakakids.jp', NOW()),
+('660e8400-e29b-41d4-a716-446655440004', 'David Tanaka', 'david.tanaka@yokohamalearning.jp', NOW())
+ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================================
+-- TEACHER SCHOOLS (Junction Table)
+-- ============================================================================
+-- Links teachers to schools, enabling multi-school support
+-- Note: For seed data, we're creating accepted relationships without invitation tokens
 -- In production, teachers should be added via the School Admin app, which will
 -- automatically generate invitation tokens and send invitation emails
-INSERT INTO teachers (id, name, email, school_id, invitation_status, created_at) VALUES
-('660e8400-e29b-41d4-a716-446655440001', 'Sarah Johnson', 'sarah.johnson@tokyoenglish.ac.jp', '550e8400-e29b-41d4-a716-446655440001', 'accepted', NOW()),
-('660e8400-e29b-41d4-a716-446655440002', 'Michael Chen', 'michael.chen@tokyoenglish.ac.jp', '550e8400-e29b-41d4-a716-446655440001', 'accepted', NOW()),
-('660e8400-e29b-41d4-a716-446655440003', 'Emma Williams', 'emma.williams@osakakids.jp', '550e8400-e29b-41d4-a716-446655440002', 'accepted', NOW()),
-('660e8400-e29b-41d4-a716-446655440004', 'David Tanaka', 'david.tanaka@yokohamalearning.jp', '550e8400-e29b-41d4-a716-446655440003', 'accepted', NOW())
-ON CONFLICT (id) DO NOTHING;
+-- Example: Sarah Johnson works at Tokyo English Academy (and could work at other schools too)
+INSERT INTO teacher_schools (id, teacher_id, school_id, invitation_status, created_at) VALUES
+('770e8400-e29b-41d4-a716-446655440001', '660e8400-e29b-41d4-a716-446655440001', '550e8400-e29b-41d4-a716-446655440001', 'accepted', NOW()),
+('770e8400-e29b-41d4-a716-446655440002', '660e8400-e29b-41d4-a716-446655440002', '550e8400-e29b-41d4-a716-446655440001', 'accepted', NOW()),
+('770e8400-e29b-41d4-a716-446655440003', '660e8400-e29b-41d4-a716-446655440003', '550e8400-e29b-41d4-a716-446655440002', 'accepted', NOW()),
+('770e8400-e29b-41d4-a716-446655440004', '660e8400-e29b-41d4-a716-446655440004', '550e8400-e29b-41d4-a716-446655440003', 'accepted', NOW()),
+-- Example: Sarah Johnson also works at Osaka Kids English (multi-school support)
+('770e8400-e29b-41d4-a716-446655440005', '660e8400-e29b-41d4-a716-446655440001', '550e8400-e29b-41d4-a716-446655440002', 'accepted', NOW())
+ON CONFLICT (teacher_id, school_id) DO NOTHING;
 
 -- ============================================================================
 -- CLASSES
@@ -251,7 +267,8 @@ ON CONFLICT (id) DO NOTHING;
 -- ============================================================================
 -- This seed file creates:
 -- - 3 Schools (Tokyo, Osaka, Yokohama)
--- - 4 Teachers
+-- - 4 Teachers (with multi-school support)
+-- - 5 Teacher-School relationships (Sarah Johnson works at 2 schools)
 -- - 6 Classes
 -- - 13 Students (with various registration statuses and progress)
 -- - 12 Vocabulary items (class-level and student-specific)

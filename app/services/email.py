@@ -50,17 +50,6 @@ class EmailService:
             os.getenv("resend_from_email") or
             "onboarding@resend.dev"
         )
-        # Base URL used in email links (teacher app / frontend)
-        # Prefer RESEND_FORWARDING_URL / settings.resend_forwarding_url, but fall back to legacy APP_URL if present
-        self.forward_url = (
-            getattr(settings, "resend_forwarding_url", None)
-            or os.getenv("RESEND_FORWARDING_URL")
-            or os.getenv("resend_forwarding_url")
-            or os.getenv("APP_URL")  # legacy name, kept for backward compatibility
-            or os.getenv("app_url")
-            or "http://localhost:5173"
-        )
-        
         # Debug output
         if not RESEND_AVAILABLE:
             print("Warning: resend package not installed. Run: pip install resend")
@@ -71,7 +60,7 @@ class EmailService:
         else:
             # Only print success message if key is set (to avoid cluttering logs)
             if self.resend_api_key:
-                print(f"Email service configured. From: {self.from_email}, Forward URL: {self.forward_url}")
+                print(f"Email service configured. From: {self.from_email}")
         
         if RESEND_AVAILABLE and self.resend_api_key:
             try:
@@ -84,6 +73,48 @@ class EmailService:
         else:
             self.resend = None
     
+    def _get_frontend_url_for_role(self, role: str, inviter_role: Optional[str] = None) -> Optional[str]:
+        """
+        Get the frontend base URL for a given role based on invitation routing rules.
+        
+        Routing rules:
+        - Teachers: Always use FRONTEND_TEACHERS_URL (regardless of who invites them)
+        - School Admins: Use FRONTEND_SCHOOLS_URL
+          - When invited by Platform Admin: Use FRONTEND_SCHOOLS_URL
+          - When invited by School Admin (team member): Use FRONTEND_SCHOOLS_URL
+        - Platform Admins: Use FRONTEND_ADMINS_URL
+          - When invited by Platform Admin (team member): Use FRONTEND_ADMINS_URL
+        
+        Args:
+            role: The role being invited ('teacher', 'school_admin', 'platform_admin')
+            inviter_role: The role of the person sending the invitation (optional, for future use)
+        
+        Returns:
+            The frontend base URL for the role, or None if not configured
+        """
+        if role == "teacher":
+            # Teachers always go to teacher frontend, regardless of who invites them
+            return (
+                getattr(settings, "frontend_teachers_url", None)
+                or os.getenv("FRONTEND_TEACHERS_URL")
+                or os.getenv("frontend_teachers_url")
+            )
+        elif role == "school_admin":
+            # School admins always go to school admin frontend
+            return (
+                getattr(settings, "frontend_schools_url", None)
+                or os.getenv("FRONTEND_SCHOOLS_URL")
+                or os.getenv("frontend_schools_url")
+            )
+        elif role == "platform_admin":
+            # Platform admins always go to platform admin frontend
+            return (
+                getattr(settings, "frontend_admins_url", None)
+                or os.getenv("FRONTEND_ADMINS_URL")
+                or os.getenv("frontend_admins_url")
+            )
+        return None
+    
     def send_teacher_invitation(
         self,
         teacher_email: str,
@@ -93,7 +124,8 @@ class EmailService:
         inviter_name: Optional[str] = None
     ) -> bool:
         """
-        Send an invitation email to a teacher
+        Send an invitation email to a teacher.
+        Teachers are always invited to the teacher frontend (FRONTEND_TEACHERS_URL).
         
         Args:
             teacher_email: Email address of the teacher
@@ -109,8 +141,15 @@ class EmailService:
             print(f"Email service not available. Would send invitation to {teacher_email}")
             return False
         
-        # Build invitation URL using the configured forwarding URL (e.g. teacher app)
-        invitation_url = f"{self.forward_url}/teacher/accept-invitation?token={invitation_token}"
+        # Teachers are always invited to the teacher frontend
+        frontend_url = self._get_frontend_url_for_role("teacher")
+        if not frontend_url:
+            print(f"Warning: FRONTEND_TEACHERS_URL not configured. Cannot send invitation to {teacher_email}")
+            return False
+        
+        # Build invitation URL using the teacher frontend URL
+        base_url = frontend_url.rstrip('/')
+        invitation_url = f"{base_url}/teacher/accept-invitation?token={invitation_token}"
         
         # Email content
         inviter_text = f" by {inviter_name}" if inviter_name else ""

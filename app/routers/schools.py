@@ -11,8 +11,43 @@ router = APIRouter()
 @router.get("/{school_id}/teachers")
 async def get_school_teachers(school_id: str):
     """Get all teachers for a school"""
-    teachers = supabase.table("teachers").select("*").eq("school_id", school_id).execute()
-    return {"teachers": teachers.data}
+    # Get teacher_schools relationships for this school
+    teacher_schools = supabase_admin.table("teacher_schools").select("*").eq("school_id", school_id).execute()
+    
+    if not teacher_schools.data:
+        return {"teachers": []}
+    
+    # Get all teacher IDs
+    teacher_ids = [ts["teacher_id"] for ts in teacher_schools.data]
+    
+    # Get teacher details
+    teachers_data = supabase_admin.table("teachers").select("*").in_("id", teacher_ids).execute()
+    
+    # Create a map of teacher_id -> teacher data
+    teachers_map = {t["id"]: t for t in teachers_data.data}
+    
+    # Merge teacher_schools data with teacher data
+    teachers = []
+    for ts in teacher_schools.data:
+        teacher_id = ts["teacher_id"]
+        teacher = teachers_map.get(teacher_id)
+        
+        # Skip if teacher record doesn't exist (data integrity issue)
+        if not teacher:
+            continue
+        
+        # Merge teacher data with teacher_schools invitation data
+        merged_teacher = {
+            **teacher,  # All teacher fields (id, name, email, etc.)
+            "teacher_school_id": ts.get("id"),  # The teacher_schools relationship ID
+            "invitation_status": ts.get("invitation_status"),  # Key field: pending, accepted, expired
+            "invitation_token": ts.get("invitation_token"),
+            "invitation_sent_at": ts.get("invitation_sent_at"),
+            "invitation_expires_at": ts.get("invitation_expires_at")
+        }
+        teachers.append(merged_teacher)
+    
+    return {"teachers": teachers}
 
 
 @router.get("/{school_id}/students/available-icon-sequence")
@@ -213,18 +248,35 @@ async def add_teacher(school_id: str, name: str = Form(...), email: str = Form(.
     invitation_token = secrets.token_urlsafe(32)
     invitation_expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
     
-    teacher_data = {
-        "name": name,
-        "email": email,
+    # Check if teacher already exists (by email)
+    existing_teacher = supabase_admin.table("teachers").select("id").eq("email", email).maybe_single().execute()
+    
+    if existing_teacher.data:
+        # Teacher exists, just create teacher_schools relationship
+        teacher_id = existing_teacher.data["id"]
+        # Check if relationship already exists
+        existing_relationship = supabase_admin.table("teacher_schools").select("id").eq("teacher_id", teacher_id).eq("school_id", school_id).maybe_single().execute()
+        if existing_relationship.data:
+            raise HTTPException(status_code=400, detail="Teacher is already associated with this school")
+    else:
+        # Create new teacher record
+        teacher_data = {
+            "name": name,
+            "email": email
+        }
+        result = supabase_admin.table("teachers").insert(teacher_data).execute()
+        teacher_id = result.data[0]["id"]
+    
+    # Create teacher_schools relationship with invitation info
+    teacher_school_data = {
+        "teacher_id": teacher_id,
         "school_id": school_id,
         "invitation_token": invitation_token,
         "invitation_sent_at": datetime.utcnow().isoformat(),
         "invitation_status": "pending",
         "invitation_expires_at": invitation_expires_at
     }
-    
-    result = supabase_admin.table("teachers").insert(teacher_data).execute()
-    teacher_id = result.data[0]["id"]
+    teacher_school_result = supabase_admin.table("teacher_schools").insert(teacher_school_data).execute()
     
     # Send invitation email (non-blocking - don't fail if email fails)
     try:
@@ -242,10 +294,13 @@ async def add_teacher(school_id: str, name: str = Form(...), email: str = Form(.
         # Log error but don't fail the request
         print(f"Error sending invitation email to {email}: {str(e)}")
     
+    # Get teacher data for response
+    teacher_result = supabase_admin.table("teachers").select("*").eq("id", teacher_id).single().execute()
+    
     return {
         "teacher_id": teacher_id,
         "message": "Teacher added and invitation email sent",
-        "teacher": result.data[0],
+        "teacher": teacher_result.data[0],
         "invitation_sent": True
     }
 
@@ -262,12 +317,13 @@ async def resend_teacher_invitation(school_id: str, teacher_id: str, user = Depe
     if not user_data.data or user_data.data.get("school_id") != school_id:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Get teacher
-    teacher_result = supabase_admin.table("teachers").select("*").eq("id", teacher_id).eq("school_id", school_id).single().execute()
-    if not teacher_result.data:
-        raise HTTPException(status_code=404, detail="Teacher not found")
+    # Get teacher_schools relationship
+    teacher_school_result = supabase_admin.table("teacher_schools").select("*, teachers(*)").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
+    if not teacher_school_result.data:
+        raise HTTPException(status_code=404, detail="Teacher not found for this school")
     
-    teacher = teacher_result.data
+    teacher_school = teacher_school_result.data
+    teacher = teacher_school.get("teachers", {})
     
     # Get school name for email
     school = supabase_admin.table("schools").select("name").eq("id", school_id).single().execute()
@@ -281,13 +337,13 @@ async def resend_teacher_invitation(school_id: str, teacher_id: str, user = Depe
     invitation_token = secrets.token_urlsafe(32)
     invitation_expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
     
-    # Update teacher with new invitation token
-    supabase_admin.table("teachers").update({
+    # Update teacher_schools with new invitation token
+    supabase_admin.table("teacher_schools").update({
         "invitation_token": invitation_token,
         "invitation_sent_at": datetime.utcnow().isoformat(),
         "invitation_status": "pending",
         "invitation_expires_at": invitation_expires_at
-    }).eq("id", teacher_id).execute()
+    }).eq("teacher_id", teacher_id).eq("school_id", school_id).execute()
     
     # Send invitation email
     try:
@@ -336,9 +392,9 @@ async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = 
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify teacher belongs to school
-    teacher_check = supabase_admin.table("teachers").select("id").eq("id", teacher_id).eq("school_id", school_id).single().execute()
-    if not teacher_check.data:
-        raise HTTPException(status_code=404, detail="Teacher not found")
+    teacher_school_check = supabase_admin.table("teacher_schools").select("teacher_id").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
+    if not teacher_school_check.data:
+        raise HTTPException(status_code=404, detail="Teacher not found for this school")
     
     update_data = {}
     if name is not None:
@@ -349,6 +405,7 @@ async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = 
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
     
+    # Update teacher record (affects all schools)
     result = supabase_admin.table("teachers").update(update_data).eq("id", teacher_id).execute()
     return {"message": "Teacher updated", "teacher": result.data[0]}
 
@@ -362,12 +419,14 @@ async def delete_teacher(school_id: str, teacher_id: str, user = Depends(require
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify teacher belongs to school
-    teacher_check = supabase_admin.table("teachers").select("id").eq("id", teacher_id).eq("school_id", school_id).single().execute()
-    if not teacher_check.data:
-        raise HTTPException(status_code=404, detail="Teacher not found")
+    teacher_school_check = supabase_admin.table("teacher_schools").select("id").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
+    if not teacher_school_check.data:
+        raise HTTPException(status_code=404, detail="Teacher not found for this school")
     
-    supabase_admin.table("teachers").delete().eq("id", teacher_id).execute()
-    return {"message": "Teacher deleted"}
+    # Remove teacher from this school (delete teacher_schools relationship)
+    # Note: This doesn't delete the teacher record, just removes them from this school
+    supabase_admin.table("teacher_schools").delete().eq("teacher_id", teacher_id).eq("school_id", school_id).execute()
+    return {"message": "Teacher removed from school"}
 
 
 @router.post("/{school_id}/classes")
@@ -379,9 +438,9 @@ async def add_class(school_id: str, name: str = Form(...), teacher_id: str = For
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify teacher belongs to school
-    teacher_check = supabase_admin.table("teachers").select("id").eq("id", teacher_id).eq("school_id", school_id).single().execute()
-    if not teacher_check.data:
-        raise HTTPException(status_code=404, detail="Teacher not found")
+    teacher_school_check = supabase_admin.table("teacher_schools").select("teacher_id").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
+    if not teacher_school_check.data:
+        raise HTTPException(status_code=404, detail="Teacher not found for this school")
     
     # Verify location belongs to school if provided
     if location_id:
@@ -419,9 +478,9 @@ async def update_class(school_id: str, class_id: str, name: Optional[str] = Form
         update_data["name"] = name
     if teacher_id is not None:
         # Verify teacher belongs to school
-        teacher_check = supabase_admin.table("teachers").select("id").eq("id", teacher_id).eq("school_id", school_id).single().execute()
-        if not teacher_check.data:
-            raise HTTPException(status_code=404, detail="Teacher not found")
+        teacher_school_check = supabase_admin.table("teacher_schools").select("teacher_id").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
+        if not teacher_school_check.data:
+            raise HTTPException(status_code=404, detail="Teacher not found for this school")
         update_data["teacher_id"] = teacher_id
     if location_id is not None:
         if location_id == "":
@@ -660,7 +719,7 @@ async def delete_location(school_id: str, location_id: str, user = Depends(requi
 async def get_school_dashboard(school_id: str):
     """Get school dashboard metrics"""
     # Get counts
-    teachers = supabase.table("teachers").select("id").eq("school_id", school_id).execute()
+    teachers = supabase.table("teacher_schools").select("teacher_id").eq("school_id", school_id).execute()
     classes = supabase.table("classes").select("id").eq("school_id", school_id).execute()
     class_ids = [c["id"] for c in classes.data]
     students = supabase.table("students").select("id").in_("class_id", class_ids).execute()
@@ -680,7 +739,7 @@ async def get_school_dashboard(school_id: str):
         },
         "teacher_level": {
             "total_teachers": len(teachers.data),
-            "teachers": teachers.data
+            "teachers": [{"id": t["teacher_id"]} for t in teachers.data]
         },
         "class_level": {
             "total_classes": len(classes.data),

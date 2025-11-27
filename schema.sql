@@ -36,28 +36,51 @@ CREATE INDEX IF NOT EXISTS idx_users_school_id ON users(school_id);
 -- ============================================================================
 -- TEACHERS
 -- ============================================================================
+-- Teachers table stores core teacher information (one record per teacher)
+-- Teachers can work at multiple schools via the teacher_schools junction table
 CREATE TABLE IF NOT EXISTS teachers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_teachers_email ON teachers(email);
+
+-- Add comments
+COMMENT ON TABLE teachers IS 'Core teacher information. Teachers can work at multiple schools via teacher_schools table.';
+COMMENT ON COLUMN teachers.email IS 'Unique email address for the teacher';
+
+-- ============================================================================
+-- TEACHER SCHOOLS (Junction Table)
+-- ============================================================================
+-- Links teachers to schools, enabling multi-school support
+-- Stores invitation information per school-teacher relationship
+CREATE TABLE IF NOT EXISTS teacher_schools (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    teacher_id UUID NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
     school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-    -- Teacher invitation fields (for email-based invitations)
+    -- Teacher invitation fields (for email-based invitations per school)
     invitation_token VARCHAR(255) UNIQUE,
     invitation_sent_at TIMESTAMP WITH TIME ZONE,
     invitation_status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'accepted', 'expired'
     invitation_expires_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(teacher_id, school_id) -- Prevent duplicate relationships
 );
 
-CREATE INDEX IF NOT EXISTS idx_teachers_school_id ON teachers(school_id);
-CREATE INDEX IF NOT EXISTS idx_teachers_invitation_token ON teachers(invitation_token) WHERE invitation_token IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_teacher_schools_teacher_id ON teacher_schools(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_schools_school_id ON teacher_schools(school_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_schools_invitation_token ON teacher_schools(invitation_token) WHERE invitation_token IS NOT NULL;
 
 -- Add comments for invitation fields
-COMMENT ON COLUMN teachers.invitation_token IS 'Unique token for teacher invitation email';
-COMMENT ON COLUMN teachers.invitation_sent_at IS 'Timestamp when invitation was sent';
-COMMENT ON COLUMN teachers.invitation_status IS 'Status of invitation: pending, accepted, expired';
-COMMENT ON COLUMN teachers.invitation_expires_at IS 'Expiration timestamp for invitation (typically 7 days)';
+COMMENT ON TABLE teacher_schools IS 'Junction table linking teachers to schools, enabling multi-school support';
+COMMENT ON COLUMN teacher_schools.invitation_token IS 'Unique token for teacher invitation email (per school)';
+COMMENT ON COLUMN teacher_schools.invitation_sent_at IS 'Timestamp when invitation was sent';
+COMMENT ON COLUMN teacher_schools.invitation_status IS 'Status of invitation: pending, accepted, expired';
+COMMENT ON COLUMN teacher_schools.invitation_expires_at IS 'Expiration timestamp for invitation (typically 7 days)';
 
 -- ============================================================================
 -- SCHOOL LOCATIONS
@@ -275,6 +298,7 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE schools ENABLE ROW LEVEL SECURITY;
 ALTER TABLE school_locations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE teachers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE teacher_schools ENABLE ROW LEVEL SECURITY;
 ALTER TABLE classes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vocabulary ENABLE ROW LEVEL SECURITY;
@@ -294,6 +318,7 @@ DROP POLICY IF EXISTS "Service role can do everything" ON users;
 DROP POLICY IF EXISTS "Service role can do everything" ON schools;
 DROP POLICY IF EXISTS "Service role can do everything" ON school_locations;
 DROP POLICY IF EXISTS "Service role can do everything" ON teachers;
+DROP POLICY IF EXISTS "Service role can do everything" ON teacher_schools;
 DROP POLICY IF EXISTS "Service role can do everything" ON classes;
 DROP POLICY IF EXISTS "Service role can do everything" ON students;
 DROP POLICY IF EXISTS "Service role can do everything" ON vocabulary;
@@ -309,6 +334,7 @@ DROP POLICY IF EXISTS "Allow public read access" ON users;
 DROP POLICY IF EXISTS "Allow public read access" ON schools;
 DROP POLICY IF EXISTS "Allow public read access" ON school_locations;
 DROP POLICY IF EXISTS "Allow public read access" ON teachers;
+DROP POLICY IF EXISTS "Allow public read access" ON teacher_schools;
 DROP POLICY IF EXISTS "Allow public read access" ON classes;
 DROP POLICY IF EXISTS "Allow public read access" ON students;
 DROP POLICY IF EXISTS "Allow public read access" ON vocabulary;
@@ -330,6 +356,9 @@ CREATE POLICY "Service role can do everything" ON school_locations
     FOR ALL USING (auth.role() = 'service_role');
 
 CREATE POLICY "Service role can do everything" ON teachers
+    FOR ALL USING (auth.role() = 'service_role');
+
+CREATE POLICY "Service role can do everything" ON teacher_schools
     FOR ALL USING (auth.role() = 'service_role');
 
 CREATE POLICY "Service role can do everything" ON classes
@@ -371,6 +400,9 @@ CREATE POLICY "Allow public read access" ON school_locations
     FOR SELECT USING (true);
 
 CREATE POLICY "Allow public read access" ON teachers
+    FOR SELECT USING (true);
+
+CREATE POLICY "Allow public read access" ON teacher_schools
     FOR SELECT USING (true);
 
 CREATE POLICY "Allow public read access" ON classes

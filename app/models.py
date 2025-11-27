@@ -52,7 +52,7 @@ class SurveyResponse(BaseModel):
 
 class Vocabulary(BaseModel):
     id: Optional[str] = None
-    teacher_id: str
+    teacher_id: Optional[str] = None
     class_id: Optional[str] = None
     student_id: Optional[str] = None
     english_word: str
@@ -66,7 +66,7 @@ class Vocabulary(BaseModel):
 
 class Grammar(BaseModel):
     id: Optional[str] = None
-    teacher_id: str
+    teacher_id: Optional[str] = None
     class_id: Optional[str] = None
     student_id: Optional[str] = None
     rule_name: str

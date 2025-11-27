@@ -16,7 +16,7 @@ async def get_all_schools(user = Depends(require_role([UserRole.PLATFORM_ADMIN])
     # Get metrics for each school
     for school in schools.data:
         # Get counts
-        teachers = supabase_admin.table("teachers").select("id").eq("school_id", school["id"]).execute()
+        teachers = supabase_admin.table("teacher_schools").select("teacher_id").eq("school_id", school["id"]).execute()
         classes = supabase_admin.table("classes").select("id").eq("school_id", school["id"]).execute()
         class_ids = [c["id"] for c in classes.data]
         students = supabase_admin.table("students").select("id").in_("class_id", class_ids).execute()
@@ -51,7 +51,9 @@ async def get_school_details(school_id: str, user = Depends(require_role([UserRo
         raise HTTPException(status_code=404, detail="School not found")
     
     # Get related data
-    teachers = supabase_admin.table("teachers").select("*").eq("school_id", school_id).execute()
+    # Join through teacher_schools to get teachers for this school
+    teacher_schools = supabase_admin.table("teacher_schools").select("*, teachers(*)").eq("school_id", school_id).execute()
+    teachers = [ts.get("teachers", {}) for ts in teacher_schools.data]
     classes = supabase_admin.table("classes").select("*").eq("school_id", school_id).execute()
     payments = supabase_admin.table("payments").select("*").eq("school_id", school_id).execute()
     
