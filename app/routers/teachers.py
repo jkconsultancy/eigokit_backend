@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Form
 from app.database import supabase, supabase_admin
 from app.models import SurveyQuestion, Vocabulary, Grammar
 from app.auth import get_current_user
+from app.services.icon_password import generate_student_icon_sequence, get_icons_by_ids
 from typing import List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -27,30 +31,67 @@ async def add_student(
     icon_sequence: Optional[str] = Form(None),
 ):
     """Add a new student to a class"""
-    # Verify teacher owns the class
-    class_check = supabase.table("classes").select("teacher_id").eq("id", class_id).single().execute()
-    if not class_check.data or class_check.data["teacher_id"] != teacher_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this class")
+    try:
+        # Verify teacher owns the class
+        class_check = supabase.table("classes").select("teacher_id").eq("id", class_id).single().execute()
+        if not class_check.data:
+            logger.warning(f"Class not found: class_id={class_id}, teacher_id={teacher_id}")
+            raise HTTPException(status_code=404, detail="Class not found")
+        
+        if class_check.data["teacher_id"] != teacher_id:
+            logger.warning(f"Teacher not authorized for class: class_id={class_id}, teacher_id={teacher_id}, class_teacher_id={class_check.data['teacher_id']}")
+            raise HTTPException(status_code=403, detail="Not authorized for this class")
+        
+        # Get school_id from class
+        class_info = supabase_admin.table("classes").select("school_id").eq("id", class_id).single().execute()
+        if not class_info.data:
+            raise HTTPException(status_code=404, detail="Class not found")
+        
+        school_id = class_info.data["school_id"]
+        
+        student_data = {
+            "name": name,
+            "class_id": class_id,
+            "registration_status": "pending",
+        }
+
+        # Auto-generate icon sequence if not provided
+        if icon_sequence:
+            try:
+                icon_array = [int(x.strip()) for x in icon_sequence.split(",")]
+                if len(icon_array) != 5:
+                    raise HTTPException(status_code=400, detail="Icon sequence must contain exactly 5 icons")
+                student_data["icon_sequence"] = icon_array
+            except ValueError as e:
+                logger.warning(f"Invalid icon_sequence format: {icon_sequence}, error: {str(e)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid icon_sequence format. Use comma-separated integers.",
+                )
+        else:
+            # Auto-generate unique 5-icon sequence
+            generated_sequence = generate_student_icon_sequence(supabase_admin, school_id)
+            if not generated_sequence:
+                raise HTTPException(status_code=500, detail="Failed to generate unique icon sequence")
+            student_data["icon_sequence"] = generated_sequence
+            logger.info(f"Auto-generated icon sequence for student: {generated_sequence}")
+
+        # Use supabase_admin to bypass RLS policies for insert
+        result = supabase_admin.table("students").insert(student_data).execute()
+        if not result.data:
+            logger.error(f"Failed to insert student: {student_data}")
+            raise HTTPException(status_code=500, detail="Failed to create student")
+        
+        logger.info(f"Student added successfully: student_id={result.data[0]['id']}, name={name}, class_id={class_id}")
+        return {"student_id": result.data[0]["id"], "message": "Student added", "student": result.data[0]}
     
-    student_data = {
-        "name": name,
-        "class_id": class_id,
-        "registration_status": "pending",
-    }
-
-    # Optional icon sequence support (same format as school admin flow)
-    if icon_sequence:
-        try:
-            icon_array = [int(x.strip()) for x in icon_sequence.split(",")]
-            student_data["icon_sequence"] = icon_array
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid icon_sequence format. Use comma-separated integers.",
-            )
-
-    result = supabase.table("students").insert(student_data).execute()
-    return {"student_id": result.data[0]["id"], "message": "Student added", "student": result.data[0]}
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Log unexpected errors
+        logger.error(f"Unexpected error adding student: teacher_id={teacher_id}, name={name}, class_id={class_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An unexpected error occurred while adding the student")
 
 
 @router.put("/students/{student_id}")
@@ -62,32 +103,93 @@ async def update_student(student_id: str, name: str = None, class_id: str = None
     if class_id:
         update_data["class_id"] = class_id
     
-    supabase.table("students").update(update_data).eq("id", student_id).execute()
+    # Use supabase_admin to bypass RLS policies for update
+    supabase_admin.table("students").update(update_data).eq("id", student_id).execute()
     return {"message": "Student updated"}
 
 
 @router.delete("/students/{student_id}")
 async def delete_student(student_id: str):
     """Remove student from class"""
-    supabase.table("students").delete().eq("id", student_id).execute()
+    # Use supabase_admin to bypass RLS policies for delete
+    supabase_admin.table("students").delete().eq("id", student_id).execute()
     return {"message": "Student removed"}
+
+
+@router.get("/students/{student_id}")
+async def get_student_detail(student_id: str):
+    """Get detailed student information including icon sequence"""
+    try:
+        student = supabase_admin.table("students").select("*, classes(school_id, name)").eq("id", student_id).single().execute()
+        
+        if not student.data:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        student_info = student.data
+        icon_sequence = student_info.get("icon_sequence", [])
+        
+        # Get icon details
+        icons = get_icons_by_ids(icon_sequence) if icon_sequence else []
+        
+        return {
+            "student": student_info,
+            "icon_sequence": icon_sequence,
+            "icons": icons
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting student detail: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get student details")
 
 
 @router.post("/{teacher_id}/reset-auth/{student_id}")
 async def reset_student_auth(teacher_id: str, student_id: str):
-    """Reset student authentication"""
-    # Verify teacher has access to this student
-    student = supabase.table("students").select("class_id").eq("id", student_id).single().execute()
-    if not student.data:
-        raise HTTPException(status_code=404, detail="Student not found")
-    
-    class_check = supabase.table("classes").select("teacher_id").eq("id", student.data["class_id"]).single().execute()
-    if class_check.data["teacher_id"] != teacher_id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    # Clear icon sequence to force re-registration
-    supabase.table("students").update({"icon_sequence": None, "registration_status": "pending"}).eq("id", student_id).execute()
-    return {"message": "Student authentication reset"}
+    """Reset student authentication and generate new icon sequence"""
+    try:
+        # Verify teacher has access to this student
+        student = supabase_admin.table("students").select("class_id").eq("id", student_id).single().execute()
+        if not student.data:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        class_id = student.data["class_id"]
+        
+        # Get class info to verify teacher and get school_id
+        class_info = supabase_admin.table("classes").select("school_id, teacher_id").eq("id", class_id).single().execute()
+        if not class_info.data:
+            raise HTTPException(status_code=404, detail="Class not found")
+        
+        if class_info.data["teacher_id"] != teacher_id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        
+        school_id = class_info.data["school_id"]
+        
+        # Generate new unique icon sequence
+        new_sequence = generate_student_icon_sequence(supabase_admin, school_id, student_id=student_id)
+        
+        if not new_sequence:
+            raise HTTPException(status_code=500, detail="Failed to generate new icon sequence")
+        
+        # Use supabase_admin to bypass RLS policies for update
+        supabase_admin.table("students").update({
+            "icon_sequence": new_sequence,
+            "registration_status": "pending"
+        }).eq("id", student_id).execute()
+        
+        # Get icon details for response
+        icons = get_icons_by_ids(new_sequence)
+        
+        logger.info(f"Reset icon sequence for student {student_id}: {new_sequence}")
+        return {
+            "message": "Student authentication reset",
+            "icon_sequence": new_sequence,
+            "icons": icons
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resetting student auth: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to reset student authentication")
 
 
 @router.post("/{teacher_id}/vocabulary")

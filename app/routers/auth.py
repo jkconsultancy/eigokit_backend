@@ -3,9 +3,104 @@ from app.database import supabase, supabase_admin
 from app.config import settings
 from app.models import StudentRegistration, StudentSignIn
 from app.auth import get_current_user
+from app.services.icon_password import get_icons_by_ids, generate_school_password_icons
 from typing import Optional
 
 router = APIRouter()
+
+
+@router.get("/schools")
+async def get_schools():
+    """Get list of all schools for student login selection"""
+    try:
+        schools = supabase.table("schools").select("id, name, password_icons").execute()
+    except Exception as e:
+        # Check if the error is about missing column
+        error_msg = str(e).lower()
+        if "password_icons" in error_msg and ("does not exist" in error_msg or "column" in error_msg):
+            raise HTTPException(
+                status_code=500,
+                detail="Database migration required: password_icons column missing. Please run migrations/002_add_school_password_icons.sql"
+            )
+        raise
+    
+    # For each school, ensure it has password icons set, and return icon details
+    result = []
+    for school in schools.data or []:
+        password_icon_ids = school.get("password_icons")
+        
+        # If school doesn't have password icons, generate them
+        if not password_icon_ids or len(password_icon_ids) != 9:
+            password_icon_ids = generate_school_password_icons()
+            # Save to database
+            try:
+                supabase_admin.table("schools").update({"password_icons": password_icon_ids}).eq("id", school["id"]).execute()
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "password_icons" in error_msg and ("does not exist" in error_msg or "column" in error_msg):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Database migration required: password_icons column missing. Please run migrations/002_add_school_password_icons.sql"
+                    )
+                raise
+        
+        # Get icon details
+        icons = get_icons_by_ids(password_icon_ids)
+        
+        result.append({
+            "id": school["id"],
+            "name": school["name"],
+            "password_icons": password_icon_ids,
+            "icons": icons
+        })
+    
+    return {"schools": result}
+
+
+@router.get("/schools/{school_id}/password-icons")
+async def get_school_password_icons(school_id: str):
+    """Get password icons for a specific school"""
+    try:
+        school = supabase.table("schools").select("id, name, password_icons").eq("id", school_id).single().execute()
+    except Exception as e:
+        # Check if the error is about missing column
+        error_msg = str(e).lower()
+        if "password_icons" in error_msg and ("does not exist" in error_msg or "column" in error_msg):
+            raise HTTPException(
+                status_code=500,
+                detail="Database migration required: password_icons column missing. Please run migrations/002_add_school_password_icons.sql"
+            )
+        raise
+    
+    if not school.data:
+        raise HTTPException(status_code=404, detail="School not found")
+    
+    password_icon_ids = school.data.get("password_icons")
+    
+    # If school doesn't have password icons, generate them
+    if not password_icon_ids or len(password_icon_ids) != 9:
+        password_icon_ids = generate_school_password_icons()
+        # Save to database
+        try:
+            supabase_admin.table("schools").update({"password_icons": password_icon_ids}).eq("id", school_id).execute()
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "password_icons" in error_msg and ("does not exist" in error_msg or "column" in error_msg):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Database migration required: password_icons column missing. Please run migrations/002_add_school_password_icons.sql"
+                )
+            raise
+    
+    # Get icon details
+    icons = get_icons_by_ids(password_icon_ids)
+    
+    return {
+        "school_id": school_id,
+        "school_name": school.data["name"],
+        "password_icons": password_icon_ids,
+        "icons": icons
+    }
 
 
 @router.post("/student/register")
@@ -34,24 +129,64 @@ async def register_student(registration: StudentRegistration):
 
 
 @router.post("/student/signin")
-async def signin_student(signin: StudentSignIn):
-    """Student sign-in with icon-based authentication"""
-    # Find student by name
-    students = supabase.table("students").select("id, icon_sequence, class_id").eq("name", signin.name).execute()
+async def signin_student(signin: StudentSignIn, school_id: str = Query(..., description="School ID for authentication")):
+    """Student sign-in with icon-based authentication (icon sequence only, no name required)"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Validate icon sequence length
+    if len(signin.icon_sequence) != 5:
+        raise HTTPException(status_code=400, detail="Icon sequence must contain exactly 5 icons")
+    
+    # Find student by icon sequence and school
+    # Get classes for the school first
+    classes = supabase.table("classes").select("id").eq("school_id", school_id).execute()
+    class_ids = [c["id"] for c in classes.data] if classes.data else []
+    
+    if not class_ids:
+        raise HTTPException(status_code=401, detail="No classes found for this school")
+    
+    # Find all students in those classes
+    students = supabase.table("students").select("id, icon_sequence, class_id, name").in_("class_id", class_ids).execute()
     
     if not students.data:
-        raise HTTPException(status_code=401, detail="Student not found")
+        raise HTTPException(status_code=401, detail="No students found")
     
-    # Check icon sequence
+    # Check icon sequence (order matters)
+    # Normalize input sequence to list of integers
+    input_sequence = [int(x) for x in signin.icon_sequence]
+    
+    # Find student with matching icon sequence
     for student in students.data:
-        if student["icon_sequence"] == signin.icon_sequence:
-            # Generate session token (simplified - in production use proper JWT)
-            # For now, return student ID
+        db_sequence = student.get("icon_sequence")
+        
+        # Handle different data types from database
+        if db_sequence is None:
+            continue
+        
+        # Convert to list of integers if needed
+        if isinstance(db_sequence, list):
+            db_sequence = [int(x) for x in db_sequence]
+        else:
+            # If it's a string or other type, try to convert
+            try:
+                db_sequence = [int(x) for x in db_sequence]
+            except:
+                logger.warning(f"Could not convert icon_sequence for student {student['id']}: {db_sequence}")
+                continue
+        
+        # Compare sequences (order matters!)
+        if db_sequence == input_sequence:
+            logger.info(f"Student {student['id']} ({student.get('name', 'Unknown')}) signed in successfully")
             return {
                 "student_id": student["id"],
                 "class_id": student["class_id"],
+                "student_name": student.get("name", ""),
                 "message": "Sign-in successful"
             }
+        else:
+            # Log for debugging
+            logger.debug(f"Sequence mismatch for student {student['id']}: DB={db_sequence}, Input={input_sequence}")
     
     raise HTTPException(status_code=401, detail="Invalid icon sequence")
 

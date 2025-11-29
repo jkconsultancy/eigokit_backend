@@ -55,3 +55,4 @@ python tests/check_pytest_setup.py
 - **pytest-mock not in requirements**: It's in `requirements.txt`, so `pip install -r requirements.txt` should install it
 - **Different Python environment**: Make sure `which python` shows the venv Python path
 
+

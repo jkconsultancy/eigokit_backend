@@ -13,13 +13,12 @@ class UserRole(str, Enum):
 
 class StudentRegistration(BaseModel):
     name: str
-    icon_sequence: List[int]  # 4 icon IDs in order
+    icon_sequence: List[int]  # 5 icon IDs in order
     class_id: str
 
 
 class StudentSignIn(BaseModel):
-    name: str
-    icon_sequence: List[int]
+    icon_sequence: List[int]  # 5 icon IDs in order
 
 
 class SurveyQuestionType(str, Enum):
