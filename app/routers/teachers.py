@@ -256,28 +256,104 @@ async def get_grammar(teacher_id: str, class_id: str = None):
 @router.post("/{teacher_id}/survey-questions")
 async def create_survey_question(teacher_id: str, question: SurveyQuestion):
     """Create a survey question"""
+    # Convert empty string to None for optional class_id
+    class_id = question.class_id if question.class_id and question.class_id.strip() else None
+    
     question_data = {
         "teacher_id": teacher_id,
-        "class_id": question.class_id,
+        "class_id": class_id,
         "question_type": question.question_type.value,
         "question_text": question.question_text,
-        "question_text_jp": question.question_text_jp,
-        "options": question.options
+        "question_text_jp": question.question_text_jp if question.question_text_jp else None,
+        "options": question.options if question.options else None
     }
     
-    result = supabase.table("survey_questions").insert(question_data).execute()
+    # Use supabase_admin to bypass RLS policies for insert
+    result = supabase_admin.table("survey_questions").insert(question_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create question")
+    
     return {"question_id": result.data[0]["id"], "message": "Question created"}
 
 
 @router.get("/{teacher_id}/survey-questions")
 async def get_survey_questions(teacher_id: str, class_id: str = None):
-    """Get survey questions for teacher"""
+    """Get survey questions for teacher with response counts"""
     query = supabase.table("survey_questions").select("*").eq("teacher_id", teacher_id)
     if class_id:
         query = query.eq("class_id", class_id)
     
     result = query.execute()
-    return {"questions": result.data}
+    questions = result.data or []
+    
+    # Get response counts for each question
+    question_ids = [q["id"] for q in questions]
+    if question_ids:
+        # Get all responses for these questions
+        all_responses = supabase_admin.table("survey_responses").select("question_id").in_("question_id", question_ids).execute()
+        
+        # Count responses per question
+        response_counts = {}
+        for response in all_responses.data or []:
+            qid = response.get("question_id")
+            response_counts[qid] = response_counts.get(qid, 0) + 1
+        
+        # Add counts to questions
+        for question in questions:
+            question["response_count"] = response_counts.get(question["id"], 0)
+    else:
+        for question in questions:
+            question["response_count"] = 0
+    
+    return {"questions": questions}
+
+
+@router.get("/survey-questions/{question_id}")
+async def get_survey_question_detail(question_id: str):
+    """Get survey question details with all responses and student names"""
+    try:
+        # Get question details
+        question = supabase_admin.table("survey_questions").select("*").eq("id", question_id).single().execute()
+        
+        if not question.data:
+            raise HTTPException(status_code=404, detail="Question not found")
+        
+        # Get all responses for this question
+        responses = supabase_admin.table("survey_responses").select("*").eq("question_id", question_id).order("created_at", desc=False).execute()
+        
+        # Get student IDs and fetch student names
+        student_ids = [r["student_id"] for r in responses.data or []]
+        students_map = {}
+        
+        if student_ids:
+            students = supabase_admin.table("students").select("id, name").in_("id", student_ids).execute()
+            students_map = {s["id"]: s["name"] for s in students.data or []}
+        
+        # Format responses with student names
+        formatted_responses = []
+        for response in responses.data or []:
+            student_id = response.get("student_id")
+            student_name = students_map.get(student_id, "Unknown Student")
+            
+            formatted_responses.append({
+                "id": response["id"],
+                "student_id": student_id,
+                "student_name": student_name,
+                "response": response.get("response"),
+                "lesson_id": response.get("lesson_id"),
+                "created_at": response.get("created_at")
+            })
+        
+        return {
+            "question": question.data,
+            "responses": formatted_responses,
+            "response_count": len(formatted_responses)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting survey question detail: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get question details")
 
 
 @router.get("/{teacher_id}/schools")

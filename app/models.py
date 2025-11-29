@@ -31,7 +31,7 @@ class SurveyQuestionType(str, Enum):
 
 class SurveyQuestion(BaseModel):
     id: Optional[str] = None
-    teacher_id: str
+    teacher_id: Optional[str] = None  # Optional because it comes from URL path in some endpoints
     class_id: Optional[str] = None
     question_type: SurveyQuestionType
     question_text: str
