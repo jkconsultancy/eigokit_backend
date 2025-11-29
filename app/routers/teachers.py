@@ -253,6 +253,28 @@ async def get_grammar(teacher_id: str, class_id: str = None):
     return {"grammar": result.data}
 
 
+@router.put("/{teacher_id}/grammar/{grammar_id}")
+async def update_grammar(teacher_id: str, grammar_id: str, grammar: Grammar):
+    """Update an existing grammar rule"""
+    # Verify the grammar belongs to this teacher
+    grammar_check = supabase_admin.table("grammar").select("teacher_id").eq("id", grammar_id).single().execute()
+    if not grammar_check.data or grammar_check.data["teacher_id"] != teacher_id:
+        raise HTTPException(status_code=404, detail="Grammar rule not found")
+    
+    grammar_data = {
+        "rule_name": grammar.rule_name,
+        "rule_description": grammar.rule_description,
+        "examples": grammar.examples,
+        "class_id": grammar.class_id or None,
+        "student_id": grammar.student_id or None,
+        "is_current_lesson": grammar.is_current_lesson,
+        "scheduled_date": grammar.scheduled_date.isoformat() if grammar.scheduled_date else None
+    }
+    
+    result = supabase_admin.table("grammar").update(grammar_data).eq("id", grammar_id).execute()
+    return {"message": "Grammar updated", "grammar": result.data[0]}
+
+
 @router.post("/{teacher_id}/survey-questions")
 async def create_survey_question(teacher_id: str, question: SurveyQuestion):
     """Create a survey question"""

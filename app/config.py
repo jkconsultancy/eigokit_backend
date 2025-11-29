@@ -13,11 +13,14 @@ class Settings(BaseSettings):
     # Email service configuration (Resend)
     resend_api_key: Optional[str] = None  # Resend API key for sending emails
     resend_from_email: Optional[str] = None  # From email address (must be verified in Resend)
-
+    
     # Frontend base URLs for each app (used to construct password reset redirect URLs)
     frontend_admins_url: Optional[str] = None  # Platform admin frontend base URL
     frontend_schools_url: Optional[str] = None  # School admin frontend base URL
     frontend_teachers_url: Optional[str] = None  # Teacher frontend base URL
+
+    # AssemblyAI configuration (optional)
+    assemblyai_api_key: Optional[str] = None
 
     class Config:
         env_file = ".env"
