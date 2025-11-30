@@ -4,8 +4,62 @@ from app.models import Payment, ThemeConfig
 from app.auth import get_current_user, require_role
 from app.models import UserRole
 from typing import List, Optional
+from datetime import datetime, timezone
 
 router = APIRouter()
+
+
+def check_school_access(user_id: str, school_id: str) -> bool:
+    """Helper function to check if user has access to a school (school_admin or platform_admin)"""
+    try:
+        # Check if user has platform_admin role (can access any school)
+        platform_admin_role = supabase_admin.table("user_roles").select("expires_at").eq("user_id", user_id).eq("role", "platform_admin").is_("school_id", "null").eq("is_active", True).maybe_single().execute()
+        
+        if platform_admin_role and platform_admin_role.data:
+            expires_at = platform_admin_role.data.get("expires_at")
+            if expires_at is None:
+                return True
+            try:
+                if isinstance(expires_at, str):
+                    if expires_at.endswith('Z'):
+                        expires_at = expires_at[:-1] + '+00:00'
+                    exp_dt = datetime.fromisoformat(expires_at)
+                    if exp_dt.tzinfo is None:
+                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                else:
+                    exp_dt = expires_at
+                if exp_dt > datetime.now(timezone.utc):
+                    return True
+            except:
+                pass
+        
+        # Check if user has school_admin role for this specific school
+        school_admin_role = supabase_admin.table("user_roles").select("expires_at").eq("user_id", user_id).eq("role", "school_admin").eq("school_id", school_id).eq("is_active", True).maybe_single().execute()
+        
+        if school_admin_role and school_admin_role.data:
+            expires_at = school_admin_role.data.get("expires_at")
+            if expires_at is None:
+                return True
+            try:
+                if isinstance(expires_at, str):
+                    if expires_at.endswith('Z'):
+                        expires_at = expires_at[:-1] + '+00:00'
+                    exp_dt = datetime.fromisoformat(expires_at)
+                    if exp_dt.tzinfo is None:
+                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                else:
+                    exp_dt = expires_at
+                if exp_dt > datetime.now(timezone.utc):
+                    return True
+            except:
+                pass
+    except Exception as e:
+        # Log error but don't fail - return False to deny access
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error checking school access for user {user_id}, school {school_id}: {str(e)}")
+    
+    return False
 
 
 @router.get("/{school_id}/teachers")
@@ -118,9 +172,8 @@ async def add_student(
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Add a new student to a class"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify class belongs to school
@@ -157,9 +210,8 @@ async def update_student(
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Update a student"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify student belongs to school
@@ -201,9 +253,8 @@ async def update_student(
 @router.delete("/{school_id}/students/{student_id}")
 async def delete_student(school_id: str, student_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Delete a student"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify student belongs to school
@@ -236,9 +287,8 @@ async def add_teacher(school_id: str, name: str = Form(...), email: str = Form(.
     from datetime import datetime, timedelta
     from app.services.email import email_service
     
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Get school name for email
@@ -317,9 +367,8 @@ async def resend_teacher_invitation(school_id: str, teacher_id: str, user = Depe
     from datetime import datetime, timedelta
     from app.services.email import email_service
     
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Get teacher_schools relationship
@@ -391,9 +440,8 @@ async def resend_teacher_invitation(school_id: str, teacher_id: str, user = Depe
 @router.put("/{school_id}/teachers/{teacher_id}")
 async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = Form(None), email: Optional[str] = Form(None), is_active: Optional[str] = Form(None), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Update a teacher"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify teacher belongs to school
@@ -436,9 +484,8 @@ async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = 
 @router.delete("/{school_id}/teachers/{teacher_id}")
 async def delete_teacher(school_id: str, teacher_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Delete a teacher"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify teacher belongs to school
@@ -455,9 +502,8 @@ async def delete_teacher(school_id: str, teacher_id: str, user = Depends(require
 @router.post("/{school_id}/classes")
 async def add_class(school_id: str, name: str = Form(...), teacher_id: str = Form(...), location_id: Optional[str] = Form(None), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Add a class to school"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify teacher belongs to school
@@ -486,9 +532,8 @@ async def add_class(school_id: str, name: str = Form(...), teacher_id: str = For
 @router.put("/{school_id}/classes/{class_id}")
 async def update_class(school_id: str, class_id: str, name: Optional[str] = Form(None), teacher_id: Optional[str] = Form(None), location_id: Optional[str] = Form(None), is_active: Optional[str] = Form(None), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Update a class"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify class belongs to school
@@ -528,9 +573,8 @@ async def update_class(school_id: str, class_id: str, name: Optional[str] = Form
 @router.delete("/{school_id}/classes/{class_id}")
 async def delete_class(school_id: str, class_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Delete a class"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify class belongs to school
@@ -642,9 +686,8 @@ async def create_location(
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Create a new school location"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Convert is_active string to boolean
@@ -687,9 +730,8 @@ async def update_location(
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Update a school location"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify location belongs to school
@@ -727,9 +769,8 @@ async def update_location(
 @router.delete("/{school_id}/locations/{location_id}")
 async def delete_location(school_id: str, location_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Delete a school location"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify location belongs to school
@@ -857,9 +898,8 @@ async def get_school_dashboard(school_id: str):
 @router.get("/{school_id}")
 async def get_school(school_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Get school information"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     school = supabase_admin.table("schools").select("*").eq("id", school_id).single().execute()
@@ -876,9 +916,8 @@ async def update_school(
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Update school information"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     update_data = {}
@@ -895,18 +934,19 @@ async def update_school(
 @router.get("/{school_id}/admins")
 async def get_school_admins(school_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Get all school admins for a school, including pending invitations"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Get all users with school_admin role for this school (accepted admins)
-    # Try to get is_active if column exists, otherwise fall back to basic fields
-    try:
-        users_result = supabase_admin.table("users").select("id, email, created_at, is_active").eq("school_id", school_id).eq("role", "school_admin").order("created_at").execute()
-    except Exception:
-        # Fallback if is_active column doesn't exist yet
-        users_result = supabase_admin.table("users").select("id, email, created_at").eq("school_id", school_id).eq("role", "school_admin").order("created_at").execute()
+    # Get all users with school_admin role for this school using user_roles table
+    user_roles_result = supabase_admin.table("user_roles").select("user_id, granted_at").eq("role", "school_admin").eq("school_id", school_id).eq("is_active", True).order("granted_at").execute()
+    
+    # Get user details for these admins
+    user_ids = [ur["user_id"] for ur in user_roles_result.data]
+    users_result = supabase_admin.table("users").select("id, email, created_at, is_active").in_("id", user_ids).execute() if user_ids else type('obj', (object,), {'data': []})()
+    
+    # Create a map of user_id -> granted_at for sorting
+    granted_at_map = {ur["user_id"]: ur["granted_at"] for ur in user_roles_result.data}
     
     # Get all pending invitations for this school
     pending_invitations_result = supabase_admin.table("school_admin_invitations").select("*").eq("school_id", school_id).eq("invitation_status", "pending").order("created_at", desc=True).execute()
@@ -914,9 +954,11 @@ async def get_school_admins(school_id: str, user = Depends(require_role([UserRol
     # Create a set of emails that already have user accounts
     accepted_admin_emails = {user_record["email"] for user_record in users_result.data}
     
-    # Build list of accepted admins
+    # Build list of accepted admins with granted_at from user_roles
     admins = []
     for user_record in users_result.data:
+        user_id = user_record["id"]
+        granted_at = granted_at_map.get(user_id, user_record.get("created_at"))
         # Get invitation information (most recent first)
         try:
             invitation_result = supabase_admin.table("school_admin_invitations").select("*").eq("email", user_record["email"]).eq("school_id", school_id).order("created_at", desc=True).limit(1).execute()
@@ -979,9 +1021,12 @@ async def invite_school_admin(
     from app.services.email import email_service
     
     # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id, email").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get user email for later use
+    user_data = supabase_admin.table("users").select("email").eq("id", user.user.id).single().execute()
     
     # Get school name for email
     school = supabase_admin.table("schools").select("name").eq("id", school_id).single().execute()
@@ -1007,17 +1052,37 @@ async def invite_school_admin(
         # If query fails, continue (don't block invitation creation)
         pass
     
-    # Check if user already exists and is already a school admin for this school
-    existing_user = supabase_admin.table("users").select("id, school_id, role").eq("email", email).maybe_single().execute()
+    # Check if user already exists and is already a school admin for this school using user_roles table
+    existing_user = supabase_admin.table("users").select("id").eq("email", email).maybe_single().execute()
     
     if existing_user.data:
-        existing_user_data = existing_user.data
-        # Check if user is already a school admin for this school
-        if existing_user_data.get("school_id") == school_id and existing_user_data.get("role") == "school_admin":
-            raise HTTPException(status_code=400, detail="User is already a school admin for this school")
-        # If user exists but is not a school admin for this school, we can't invite them
-        # (they might be a teacher or admin for another school)
-        if existing_user_data.get("role") == "school_admin" and existing_user_data.get("school_id") != school_id:
+        user_id = existing_user.data["id"]
+        # Check if user already has school_admin role for this school
+        existing_role = supabase_admin.table("user_roles").select("id, expires_at").eq("user_id", user_id).eq("role", "school_admin").eq("school_id", school_id).eq("is_active", True).maybe_single().execute()
+        
+        if existing_role.data:
+            # Check if role is not expired
+            expires_at = existing_role.data.get("expires_at")
+            if expires_at is None:
+                raise HTTPException(status_code=400, detail="User is already a school admin for this school")
+            else:
+                try:
+                    if isinstance(expires_at, str):
+                        if expires_at.endswith('Z'):
+                            expires_at = expires_at[:-1] + '+00:00'
+                        exp_dt = datetime.fromisoformat(expires_at)
+                        if exp_dt.tzinfo is None:
+                            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        exp_dt = expires_at
+                    if exp_dt > datetime.now(timezone.utc):
+                        raise HTTPException(status_code=400, detail="User is already a school admin for this school")
+                except:
+                    pass  # If expired or parsing fails, allow invitation
+        
+        # Check if user is school admin for another school
+        other_school_role = supabase_admin.table("user_roles").select("school_id").eq("user_id", user_id).eq("role", "school_admin").eq("is_active", True).neq("school_id", school_id).maybe_single().execute()
+        if other_school_role.data:
             raise HTTPException(status_code=400, detail="User is already a school admin for another school")
     
     # Generate invitation token
@@ -1156,15 +1221,34 @@ async def update_school_admin(
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Update a school admin's information"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Verify admin belongs to school
-    admin_check = supabase_admin.table("users").select("school_id, role, email").eq("id", admin_id).eq("school_id", school_id).eq("role", "school_admin").single().execute()
-    if not admin_check.data:
+    # Verify admin has school_admin role for this school using user_roles table
+    admin_role = supabase_admin.table("user_roles").select("id, expires_at").eq("user_id", admin_id).eq("role", "school_admin").eq("school_id", school_id).eq("is_active", True).maybe_single().execute()
+    if not admin_role.data:
         raise HTTPException(status_code=404, detail="Admin not found for this school")
+    
+    # Check if role is expired
+    expires_at = admin_role.data.get("expires_at")
+    if expires_at is not None:
+        try:
+            if isinstance(expires_at, str):
+                if expires_at.endswith('Z'):
+                    expires_at = expires_at[:-1] + '+00:00'
+                exp_dt = datetime.fromisoformat(expires_at)
+                if exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            else:
+                exp_dt = expires_at
+            if exp_dt <= datetime.now(timezone.utc):
+                raise HTTPException(status_code=404, detail="Admin role has expired")
+        except:
+            pass
+    
+    # Get admin email for validation
+    admin_check = supabase_admin.table("users").select("email").eq("id", admin_id).single().execute()
     
     # Don't allow updating email if it would conflict with another user
     if email and email != admin_check.data.get("email"):
@@ -1203,26 +1287,25 @@ async def delete_school_admin(
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Remove a school admin from the school, or delete a pending invitation"""
-    # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Check if admin_id is a UUID (user ID) or invitation ID
-    # First, try to find it as a user ID
-    admin_check = supabase_admin.table("users").select("school_id, role").eq("id", admin_id).eq("school_id", school_id).eq("role", "school_admin").maybe_single().execute()
+    # First, try to find it as a user ID with school_admin role for this school
+    admin_role = supabase_admin.table("user_roles").select("id").eq("user_id", admin_id).eq("role", "school_admin").eq("school_id", school_id).eq("is_active", True).maybe_single().execute()
     
-    if admin_check.data:
-        # It's an existing user - remove them from school
+    if admin_role.data:
+        # It's an existing user - remove their school_admin role for this school
         # Don't allow deleting yourself
         if admin_id == user.user.id:
             raise HTTPException(status_code=400, detail="You cannot remove yourself from the school")
         
-        # Remove admin from school (set school_id to null and change role)
-        supabase_admin.table("users").update({
-            "school_id": None,
-            "role": "teacher"  # Change to teacher role as default
-        }).eq("id", admin_id).execute()
+        # Deactivate the school_admin role for this school
+        supabase_admin.table("user_roles").update({
+            "is_active": False,
+            "updated_at": datetime.now().isoformat()
+        }).eq("user_id", admin_id).eq("role", "school_admin").eq("school_id", school_id).execute()
         
         return {"message": "Admin removed from school successfully"}
     else:
@@ -1249,12 +1332,20 @@ async def resend_school_admin_invitation(
     from app.services.email import email_service
     
     # Verify user's school_id matches
-    user_data = supabase_admin.table("users").select("school_id, email").eq("id", user.user.id).single().execute()
-    if not user_data.data or user_data.data.get("school_id") != school_id:
+    # Verify user has access to this school (school_admin or platform_admin)
+    if not check_school_access(user.user.id, school_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Get user email for later use
+    user_data = supabase_admin.table("users").select("email").eq("id", user.user.id).single().execute()
+    
     # Check if admin_id is a user ID or invitation ID
-    admin_check = supabase_admin.table("users").select("email").eq("id", admin_id).eq("school_id", school_id).eq("role", "school_admin").maybe_single().execute()
+    # Check if user has school_admin role for this school
+    admin_role = supabase_admin.table("user_roles").select("id").eq("user_id", admin_id).eq("role", "school_admin").eq("school_id", school_id).eq("is_active", True).maybe_single().execute()
+    
+    if admin_role.data:
+        # Get admin email
+        admin_check = supabase_admin.table("users").select("email").eq("id", admin_id).single().execute()
     
     if admin_check.data:
         # It's an existing user - get their email and find invitation

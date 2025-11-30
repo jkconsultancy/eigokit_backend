@@ -18,11 +18,24 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- 1. Go to Supabase Dashboard > Authentication > Users > Add User
 -- 2. Create user with email/password (e.g., admin@eigokit.com)
 -- 3. Copy the user's UUID
--- 4. Replace the UUID below and uncomment the INSERT statement
+-- 4. Replace the UUID below and uncomment the INSERT statements
 --
+-- Step 1: Create user record (deprecated role/school_id columns kept for backward compatibility)
 -- INSERT INTO users (id, email, role, created_at) VALUES
 -- ('YOUR_PLATFORM_ADMIN_AUTH_USER_ID', 'admin@eigokit.com', 'platform_admin', NOW())
 -- ON CONFLICT (id) DO NOTHING;
+--
+-- Step 2: Create role in user_roles table (NEW - recommended approach)
+-- INSERT INTO user_roles (user_id, role, school_id, is_active, granted_at) VALUES
+-- ('YOUR_PLATFORM_ADMIN_AUTH_USER_ID', 'platform_admin', NULL, true, NOW())
+-- ON CONFLICT (user_id, role, school_id) DO NOTHING;
+--
+-- Example: Multi-role user (platform admin who is also a teacher at a school)
+-- This demonstrates the new multi-role capability:
+-- INSERT INTO user_roles (user_id, role, school_id, is_active, granted_at) VALUES
+-- ('YOUR_PLATFORM_ADMIN_AUTH_USER_ID', 'platform_admin', NULL, true, NOW()),
+-- ('YOUR_PLATFORM_ADMIN_AUTH_USER_ID', 'teacher', '550e8400-e29b-41d4-a716-446655440001', true, NOW())
+-- ON CONFLICT (user_id, role, school_id) DO NOTHING;
 
 -- ============================================================================
 -- SCHOOLS
@@ -263,6 +276,50 @@ INSERT INTO feature_flags (id, school_id, feature_name, enabled, expiration_date
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================================
+-- USER ROLES (Example multi-role assignments)
+-- ============================================================================
+-- NOTE: These examples demonstrate the new multi-role system.
+-- In production, user roles should be created when users are registered.
+-- 
+-- Example scenarios:
+-- 1. Platform admin (no school_id)
+-- 2. School admin at a specific school
+-- 3. Teacher at a specific school
+-- 4. Multi-role user (e.g., platform admin who is also a teacher)
+--
+-- IMPORTANT: These examples require actual user UUIDs from Supabase Auth.
+-- Uncomment and replace with real UUIDs when testing.
+--
+-- Example 1: Platform Admin (standalone)
+-- INSERT INTO user_roles (id, user_id, role, school_id, is_active, granted_at) VALUES
+-- ('220e8400-e29b-41d4-a716-446655440001', 'YOUR_PLATFORM_ADMIN_UUID', 'platform_admin', NULL, true, NOW())
+-- ON CONFLICT (user_id, role, school_id) DO NOTHING;
+--
+-- Example 2: School Admin at Tokyo English Academy
+-- INSERT INTO user_roles (id, user_id, role, school_id, is_active, granted_at) VALUES
+-- ('220e8400-e29b-41d4-a716-446655440002', 'YOUR_SCHOOL_ADMIN_UUID', 'school_admin', '550e8400-e29b-41d4-a716-446655440001', true, NOW())
+-- ON CONFLICT (user_id, role, school_id) DO NOTHING;
+--
+-- Example 3: Teacher at multiple schools (Tokyo and Osaka)
+-- INSERT INTO user_roles (id, user_id, role, school_id, is_active, granted_at) VALUES
+-- ('220e8400-e29b-41d4-a716-446655440003', 'YOUR_TEACHER_UUID', 'teacher', '550e8400-e29b-41d4-a716-446655440001', true, NOW()),
+-- ('220e8400-e29b-41d4-a716-446655440004', 'YOUR_TEACHER_UUID', 'teacher', '550e8400-e29b-41d4-a716-446655440002', true, NOW())
+-- ON CONFLICT (user_id, role, school_id) DO NOTHING;
+--
+-- Example 4: Multi-role user - Platform Admin who is also a Teacher
+-- This demonstrates the key feature: same user with multiple roles
+-- INSERT INTO user_roles (id, user_id, role, school_id, is_active, granted_at) VALUES
+-- ('220e8400-e29b-41d4-a716-446655440005', 'YOUR_MULTI_ROLE_UUID', 'platform_admin', NULL, true, NOW()),
+-- ('220e8400-e29b-41d4-a716-446655440006', 'YOUR_MULTI_ROLE_UUID', 'teacher', '550e8400-e29b-41d4-a716-446655440001', true, NOW())
+-- ON CONFLICT (user_id, role, school_id) DO NOTHING;
+--
+-- Example 5: School Admin at one school, Teacher at another
+-- INSERT INTO user_roles (id, user_id, role, school_id, is_active, granted_at) VALUES
+-- ('220e8400-e29b-41d4-a716-446655440007', 'YOUR_ADMIN_TEACHER_UUID', 'school_admin', '550e8400-e29b-41d4-a716-446655440001', true, NOW()),
+-- ('220e8400-e29b-41d4-a716-446655440008', 'YOUR_ADMIN_TEACHER_UUID', 'teacher', '550e8400-e29b-41d4-a716-446655440002', true, NOW())
+-- ON CONFLICT (user_id, role, school_id) DO NOTHING;
+
+-- ============================================================================
 -- SUMMARY
 -- ============================================================================
 -- This seed file creates:
@@ -279,6 +336,13 @@ ON CONFLICT (id) DO NOTHING;
 -- - 5 Payment records
 -- - 3 Theme configurations
 -- - 10 Feature flags
+-- - User roles examples (commented out - requires actual user UUIDs)
+--
+-- NOTE: The new user_roles table supports:
+-- - Multiple roles per user (e.g., platform_admin AND teacher)
+-- - School-scoped roles (school_admin, teacher at specific schools)
+-- - Platform-level roles (platform_admin with no school_id)
+-- - Role expiration and audit trails
 
 -- Note: Make sure your Supabase tables are created with the correct schema
 -- before running this seed file. The tables should match the schema described

@@ -21,17 +21,64 @@ CREATE TABLE IF NOT EXISTS schools (
 -- ============================================================================
 -- USERS (for role management - links to Supabase Auth users)
 -- ============================================================================
+-- NOTE: The 'role' and 'school_id' columns are DEPRECATED and kept for backward compatibility.
+-- Use the 'user_roles' table for multi-role support. These columns will be removed in a future version.
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     email VARCHAR(255) NOT NULL UNIQUE,
-    role VARCHAR(50) NOT NULL DEFAULT 'teacher',
-    school_id UUID REFERENCES schools(id) ON DELETE SET NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'teacher', -- DEPRECATED: Use user_roles table instead
+    school_id UUID REFERENCES schools(id) ON DELETE SET NULL, -- DEPRECATED: Use user_roles table instead
+    is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_school_id ON users(school_id);
+CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+
+COMMENT ON COLUMN users.role IS 'DEPRECATED: Use user_roles table for role management. Kept for backward compatibility.';
+COMMENT ON COLUMN users.school_id IS 'DEPRECATED: Use user_roles table for school associations. Kept for backward compatibility.';
+
+-- ============================================================================
+-- USER ROLES (Junction table for multiple roles per user)
+-- ============================================================================
+-- Supports users having multiple roles simultaneously (e.g., platform_admin AND teacher)
+-- Each role can be associated with a specific school (for school_admin, teacher) or NULL (for platform_admin)
+CREATE TABLE IF NOT EXISTS user_roles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(50) NOT NULL, -- 'platform_admin', 'school_admin', 'teacher', 'student'
+    school_id UUID REFERENCES schools(id) ON DELETE CASCADE, -- NULL for platform-level roles
+    is_active BOOLEAN DEFAULT true,
+    granted_by UUID REFERENCES users(id) ON DELETE SET NULL, -- Who granted this role
+    granted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE, -- Optional expiration for temporary roles
+    metadata JSONB, -- Additional role-specific data
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Constraints
+    CONSTRAINT unique_user_role_school UNIQUE(user_id, role, school_id),
+    CONSTRAINT platform_admin_no_school CHECK (
+        (role = 'platform_admin' AND school_id IS NULL) OR 
+        (role != 'platform_admin')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role);
+CREATE INDEX IF NOT EXISTS idx_user_roles_school_id ON user_roles(school_id);
+CREATE INDEX IF NOT EXISTS idx_user_roles_active ON user_roles(user_id, is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_role ON user_roles(user_id, role, is_active);
+
+COMMENT ON TABLE user_roles IS 'Junction table supporting multiple roles per user. Enables users to have platform_admin, school_admin, and teacher roles simultaneously.';
+COMMENT ON COLUMN user_roles.role IS 'Role type: platform_admin, school_admin, teacher, or student';
+COMMENT ON COLUMN user_roles.school_id IS 'School UUID for school-scoped roles (school_admin, teacher). NULL for platform_admin.';
+COMMENT ON COLUMN user_roles.is_active IS 'Whether this role assignment is currently active';
+COMMENT ON COLUMN user_roles.granted_by IS 'User ID who granted this role (for audit trail)';
+COMMENT ON COLUMN user_roles.expires_at IS 'Optional expiration timestamp for temporary role assignments';
+COMMENT ON COLUMN user_roles.metadata IS 'JSONB field for role-specific metadata (e.g., permissions, settings)';
 
 -- ============================================================================
 -- SCHOOL ADMIN INVITATIONS
@@ -321,10 +368,60 @@ CREATE INDEX IF NOT EXISTS idx_feature_flags_school_id ON feature_flags(school_i
 CREATE INDEX IF NOT EXISTS idx_feature_flags_feature_name ON feature_flags(feature_name);
 
 -- ============================================================================
+-- HELPER VIEWS
+-- ============================================================================
+-- View: Active user roles with school information
+CREATE OR REPLACE VIEW active_user_roles AS
+SELECT 
+    ur.id,
+    ur.user_id,
+    ur.role,
+    ur.school_id,
+    s.name AS school_name,
+    u.email,
+    ur.is_active,
+    ur.granted_by,
+    ur.granted_at,
+    ur.expires_at,
+    ur.metadata,
+    ur.created_at,
+    ur.updated_at
+FROM user_roles ur
+JOIN users u ON ur.user_id = u.id
+LEFT JOIN schools s ON ur.school_id = s.id
+WHERE ur.is_active = true
+  AND (ur.expires_at IS NULL OR ur.expires_at > NOW());
+
+-- View: User role summary (aggregated view)
+CREATE OR REPLACE VIEW user_role_summary AS
+SELECT 
+    u.id AS user_id,
+    u.email,
+    u.is_active AS user_is_active,
+    ARRAY_AGG(DISTINCT ur.role) FILTER (WHERE ur.school_id IS NULL AND ur.is_active = true AND (ur.expires_at IS NULL OR ur.expires_at > NOW())) AS platform_roles,
+    JSONB_AGG(
+        JSONB_BUILD_OBJECT(
+            'role', ur.role,
+            'school_id', ur.school_id,
+            'school_name', s.name,
+            'granted_at', ur.granted_at,
+            'expires_at', ur.expires_at
+        )
+    ) FILTER (WHERE ur.school_id IS NOT NULL AND ur.is_active = true AND (ur.expires_at IS NULL OR ur.expires_at > NOW())) AS school_roles
+FROM users u
+LEFT JOIN user_roles ur ON u.id = ur.user_id
+LEFT JOIN schools s ON ur.school_id = s.id
+GROUP BY u.id, u.email, u.is_active;
+
+COMMENT ON VIEW active_user_roles IS 'View showing all active user roles with school information';
+COMMENT ON VIEW user_role_summary IS 'Aggregated view showing platform and school roles per user';
+
+-- ============================================================================
 -- ROW LEVEL SECURITY (RLS) - Optional but recommended
 -- ============================================================================
 -- Enable RLS on all tables (you can customize policies based on your needs)
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE schools ENABLE ROW LEVEL SECURITY;
 ALTER TABLE school_locations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE teachers ENABLE ROW LEVEL SECURITY;
@@ -345,6 +442,7 @@ ALTER TABLE feature_flags ENABLE ROW LEVEL SECURITY;
 
 -- Drop existing policies if they exist (for re-running this script)
 DROP POLICY IF EXISTS "Service role can do everything" ON users;
+DROP POLICY IF EXISTS "Service role can do everything" ON user_roles;
 DROP POLICY IF EXISTS "Service role can do everything" ON schools;
 DROP POLICY IF EXISTS "Service role can do everything" ON school_locations;
 DROP POLICY IF EXISTS "Service role can do everything" ON teachers;
@@ -361,6 +459,7 @@ DROP POLICY IF EXISTS "Service role can do everything" ON themes;
 DROP POLICY IF EXISTS "Service role can do everything" ON feature_flags;
 
 DROP POLICY IF EXISTS "Allow public read access" ON users;
+DROP POLICY IF EXISTS "Allow public read access" ON user_roles;
 DROP POLICY IF EXISTS "Allow public read access" ON schools;
 DROP POLICY IF EXISTS "Allow public read access" ON school_locations;
 DROP POLICY IF EXISTS "Allow public read access" ON teachers;
@@ -377,6 +476,9 @@ DROP POLICY IF EXISTS "Allow public read access" ON feature_flags;
 
 -- Allow service role to do everything (for backend API)
 CREATE POLICY "Service role can do everything" ON users
+    FOR ALL USING (auth.role() = 'service_role');
+
+CREATE POLICY "Service role can do everything" ON user_roles
     FOR ALL USING (auth.role() = 'service_role');
 
 CREATE POLICY "Service role can do everything" ON schools
@@ -423,6 +525,9 @@ CREATE POLICY "Service role can do everything" ON feature_flags
 
 -- For development/testing, you might want to allow public access
 -- Remove these in production and use proper authentication-based policies
+CREATE POLICY "Allow public read access" ON user_roles
+    FOR SELECT USING (true);
+
 CREATE POLICY "Allow public read access" ON schools
     FOR SELECT USING (true);
 
@@ -471,4 +576,9 @@ CREATE POLICY "Allow public read access" ON feature_flags
 -- 4. Consider adding more indexes based on your query patterns
 -- 5. The service_role policy allows the backend API (using service key) to access everything
 -- 6. For production, implement proper role-based access control policies
+-- 7. MULTI-ROLE SYSTEM: The new user_roles table supports multiple roles per user.
+--    - Use user_roles table for all new role assignments
+--    - The users.role and users.school_id columns are deprecated but kept for backward compatibility
+--    - For existing databases, run migrations/004_migrate_to_multi_role_system.sql to migrate data
+--    - See active_user_roles and user_role_summary views for easy querying
 
