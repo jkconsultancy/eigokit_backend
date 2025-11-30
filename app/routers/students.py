@@ -44,7 +44,11 @@ async def get_student_progress(student_id: str):
         badges=badges
     )
     
-    return progress
+    # Include student name in response
+    progress_dict = progress.dict()
+    progress_dict["student_name"] = student.data.get("name", "")
+    
+    return progress_dict
 
 
 @router.get("/{student_id}/leaderboard")
