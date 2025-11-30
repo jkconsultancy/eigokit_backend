@@ -743,7 +743,7 @@ async def delete_location(school_id: str, location_id: str, user = Depends(requi
 
 @router.get("/{school_id}/dashboard")
 async def get_school_dashboard(school_id: str):
-    """Get school dashboard metrics"""
+    """Get school dashboard metrics with preview data"""
     import logging
     logger = logging.getLogger(__name__)
     
@@ -758,6 +758,42 @@ async def get_school_dashboard(school_id: str):
             else:
                 active_students = type('Response', (), {'data': []})()
             active_locations = supabase_admin.table("school_locations").select("id").eq("school_id", school_id).eq("is_active", True).execute()
+            
+            # Get preview data (limit to 5 items each)
+            try:
+                preview_locations = supabase_admin.table("school_locations").select(
+                    "id, name, city, prefecture"
+                ).eq("school_id", school_id).eq("is_active", True).limit(5).execute()
+            except Exception:
+                # Fallback if is_active doesn't exist
+                preview_locations = supabase_admin.table("school_locations").select(
+                    "id, name, city, prefecture"
+                ).eq("school_id", school_id).limit(5).execute()
+            
+            try:
+                preview_classes = supabase_admin.table("classes").select(
+                    "id, name, teacher_id, location_id, teachers(name, email), school_locations(name)"
+                ).eq("school_id", school_id).eq("is_active", True).limit(5).execute()
+            except Exception:
+                # Fallback if is_active doesn't exist
+                preview_classes = supabase_admin.table("classes").select(
+                    "id, name, teacher_id, location_id, teachers(name, email), school_locations(name)"
+                ).eq("school_id", school_id).limit(5).execute()
+            
+            # Get class IDs for students query
+            preview_class_ids = [c["id"] for c in preview_classes.data] if preview_classes.data else []
+            preview_students = type('Response', (), {'data': []})()
+            if preview_class_ids:
+                try:
+                    preview_students = supabase_admin.table("students").select(
+                        "id, name, class_id, classes(name)"
+                    ).in_("class_id", preview_class_ids).eq("is_active", True).limit(5).execute()
+                except Exception:
+                    # Fallback if is_active doesn't exist
+                    preview_students = supabase_admin.table("students").select(
+                        "id, name, class_id, classes(name)"
+                    ).in_("class_id", preview_class_ids).limit(5).execute()
+            
         except Exception as e:
             # Fallback: if is_active column doesn't exist, get all (treat all as active)
             logger.warning(f"is_active column may not exist, falling back to all records: {str(e)}")
@@ -769,6 +805,22 @@ async def get_school_dashboard(school_id: str):
             else:
                 active_students = type('Response', (), {'data': []})()
             active_locations = supabase_admin.table("school_locations").select("id").eq("school_id", school_id).execute()
+            
+            # Get preview data without is_active filter
+            preview_locations = supabase_admin.table("school_locations").select(
+                "id, name, city, prefecture"
+            ).eq("school_id", school_id).limit(5).execute()
+            
+            preview_classes = supabase_admin.table("classes").select(
+                "id, name, teacher_id, location_id, teachers(name, email), school_locations(name)"
+            ).eq("school_id", school_id).limit(5).execute()
+            
+            preview_class_ids = [c["id"] for c in preview_classes.data] if preview_classes.data else []
+            preview_students = type('Response', (), {'data': []})()
+            if preview_class_ids:
+                preview_students = supabase_admin.table("students").select(
+                    "id, name, class_id, classes(name)"
+                ).in_("class_id", preview_class_ids).limit(5).execute()
         
         return {
             "school_level": {
@@ -776,6 +828,11 @@ async def get_school_dashboard(school_id: str):
                 "active_locations": len(getattr(active_locations, 'data', [])),
                 "active_teachers": len(getattr(active_teachers, 'data', [])),
                 "active_classes": len(getattr(active_classes, 'data', []))
+            },
+            "previews": {
+                "locations": getattr(preview_locations, 'data', []) or [],
+                "classes": getattr(preview_classes, 'data', []) or [],
+                "students": getattr(preview_students, 'data', []) or []
             }
         }
     except Exception as e:
@@ -788,6 +845,11 @@ async def get_school_dashboard(school_id: str):
                 "active_locations": 0,
                 "active_teachers": 0,
                 "active_classes": 0
+            },
+            "previews": {
+                "locations": [],
+                "classes": [],
+                "students": []
             }
         }
 
