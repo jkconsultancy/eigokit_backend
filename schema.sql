@@ -34,6 +34,36 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_school_id ON users(school_id);
 
 -- ============================================================================
+-- SCHOOL ADMIN INVITATIONS
+-- ============================================================================
+-- Stores invitation information for school admin users
+CREATE TABLE IF NOT EXISTS school_admin_invitations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    invitation_token VARCHAR(255) NOT NULL UNIQUE,
+    invitation_sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    invitation_status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'accepted', 'expired'
+    invitation_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    invited_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_school_admin_invitations_school_id ON school_admin_invitations(school_id);
+CREATE INDEX IF NOT EXISTS idx_school_admin_invitations_email ON school_admin_invitations(email);
+CREATE INDEX IF NOT EXISTS idx_school_admin_invitations_token ON school_admin_invitations(invitation_token);
+CREATE INDEX IF NOT EXISTS idx_school_admin_invitations_status ON school_admin_invitations(invitation_status);
+
+COMMENT ON TABLE school_admin_invitations IS 'Stores invitation tokens for school admin users';
+COMMENT ON COLUMN school_admin_invitations.invitation_token IS 'Unique token for school admin invitation email';
+COMMENT ON COLUMN school_admin_invitations.invitation_sent_at IS 'Timestamp when invitation was sent';
+COMMENT ON COLUMN school_admin_invitations.invitation_status IS 'Status of invitation: pending, accepted, expired';
+COMMENT ON COLUMN school_admin_invitations.invitation_expires_at IS 'Expiration timestamp for invitation (typically 7 days)';
+COMMENT ON COLUMN school_admin_invitations.invited_by IS 'User ID of the person who sent the invitation';
+
+-- ============================================================================
 -- TEACHERS
 -- ============================================================================
 -- Teachers table stores core teacher information (one record per teacher)

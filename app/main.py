@@ -19,6 +19,11 @@ logging.basicConfig(
     ]
 )
 
+# Reduce verbose logging from third-party libraries
+logging.getLogger("hpack").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="EigoKit API", version="1.0.0")

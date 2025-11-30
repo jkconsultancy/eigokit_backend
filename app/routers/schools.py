@@ -747,3 +747,528 @@ async def get_school_dashboard(school_id: str):
         }
     }
 
+
+@router.get("/{school_id}")
+async def get_school(school_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
+    """Get school information"""
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    school = supabase_admin.table("schools").select("*").eq("id", school_id).single().execute()
+    if not school.data:
+        raise HTTPException(status_code=404, detail="School not found")
+    
+    return {"school": school.data}
+
+
+@router.put("/{school_id}")
+async def update_school(
+    school_id: str,
+    name: Optional[str] = Form(None),
+    user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
+):
+    """Update school information"""
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    update_data = {}
+    if name is not None:
+        update_data["name"] = name
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    
+    result = supabase_admin.table("schools").update(update_data).eq("id", school_id).execute()
+    return {"message": "School updated", "school": result.data[0]}
+
+
+@router.get("/{school_id}/admins")
+async def get_school_admins(school_id: str, user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
+    """Get all school admins for a school, including pending invitations"""
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get all users with school_admin role for this school (accepted admins)
+    users_result = supabase_admin.table("users").select("id, email, created_at").eq("school_id", school_id).eq("role", "school_admin").order("created_at").execute()
+    
+    # Get all pending invitations for this school
+    pending_invitations_result = supabase_admin.table("school_admin_invitations").select("*").eq("school_id", school_id).eq("invitation_status", "pending").order("created_at", desc=True).execute()
+    
+    # Create a set of emails that already have user accounts
+    accepted_admin_emails = {user_record["email"] for user_record in users_result.data}
+    
+    # Build list of accepted admins
+    admins = []
+    for user_record in users_result.data:
+        # Get invitation information (most recent first)
+        try:
+            invitation_result = supabase_admin.table("school_admin_invitations").select("*").eq("email", user_record["email"]).eq("school_id", school_id).order("created_at", desc=True).limit(1).execute()
+            
+            name = None
+            invitation_status = None
+            invitation_expires_at = None
+            
+            if invitation_result.data and len(invitation_result.data) > 0:
+                invitation = invitation_result.data[0]
+                name = invitation.get("name")
+                invitation_status = invitation.get("invitation_status")
+                invitation_expires_at = invitation.get("invitation_expires_at")
+        except Exception:
+            # If query fails, just continue without invitation data
+            name = None
+            invitation_status = None
+            invitation_expires_at = None
+        
+        admin_data = {
+            "id": user_record["id"],
+            "email": user_record["email"],
+            "name": name,
+            "created_at": user_record["created_at"],
+            "invitation_status": invitation_status or "accepted",  # Default to accepted if no invitation record
+            "invitation_expires_at": invitation_expires_at
+        }
+        admins.append(admin_data)
+    
+    # Add pending invitations that don't have user accounts yet
+    for invitation in pending_invitations_result.data:
+        invitation_email = invitation.get("email")
+        # Only include if this email doesn't already have a user account
+        if invitation_email not in accepted_admin_emails:
+            admin_data = {
+                "id": None,  # No user account yet
+                "email": invitation_email,
+                "name": invitation.get("name"),
+                "created_at": invitation.get("created_at"),
+                "invitation_status": "pending",
+                "invitation_expires_at": invitation.get("invitation_expires_at"),
+                "invitation_id": invitation.get("id")  # Store invitation ID for resend/delete operations
+            }
+            admins.append(admin_data)
+    
+    return {"admins": admins}
+
+
+@router.post("/{school_id}/admins/invite")
+async def invite_school_admin(
+    school_id: str,
+    email: str = Form(...),
+    name: str = Form(...),
+    user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
+):
+    """Invite a new school admin to the school"""
+    import secrets
+    from datetime import datetime, timedelta
+    from app.services.email import email_service
+    
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id, email").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get school name for email
+    school = supabase_admin.table("schools").select("name").eq("id", school_id).single().execute()
+    school_name = school.data.get("name", "the school") if school.data else "the school"
+    
+    # Get inviter email
+    inviter_email = user_data.data.get("email", "")
+    
+    # Check if there's already a pending invitation for this email and school
+    try:
+        existing_invitation_result = supabase_admin.table("school_admin_invitations").select("*").eq("email", email).eq("school_id", school_id).eq("invitation_status", "pending").execute()
+        
+        if existing_invitation_result.data and len(existing_invitation_result.data) > 0:
+            existing_invitation = existing_invitation_result.data[0]
+            # Check if invitation is still valid (not expired)
+            if existing_invitation.get("invitation_expires_at"):
+                expires_at = datetime.fromisoformat(existing_invitation["invitation_expires_at"].replace("Z", "+00:00"))
+                if datetime.utcnow().replace(tzinfo=expires_at.tzinfo) <= expires_at:
+                    raise HTTPException(status_code=400, detail="An invitation has already been sent to this email. Please wait for it to expire or resend the invitation.")
+    except HTTPException:
+        raise
+    except Exception:
+        # If query fails, continue (don't block invitation creation)
+        pass
+    
+    # Check if user already exists and is already a school admin for this school
+    existing_user = supabase_admin.table("users").select("id, school_id, role").eq("email", email).maybe_single().execute()
+    
+    if existing_user.data:
+        existing_user_data = existing_user.data
+        # Check if user is already a school admin for this school
+        if existing_user_data.get("school_id") == school_id and existing_user_data.get("role") == "school_admin":
+            raise HTTPException(status_code=400, detail="User is already a school admin for this school")
+        # If user exists but is not a school admin for this school, we can't invite them
+        # (they might be a teacher or admin for another school)
+        if existing_user_data.get("role") == "school_admin" and existing_user_data.get("school_id") != school_id:
+            raise HTTPException(status_code=400, detail="User is already a school admin for another school")
+    
+    # Generate invitation token
+    invitation_token = secrets.token_urlsafe(32)
+    invitation_expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+    
+    # Store invitation in database
+    invitation_data = {
+        "school_id": school_id,
+        "email": email,
+        "name": name,
+        "invitation_token": invitation_token,
+        "invitation_sent_at": datetime.utcnow().isoformat(),
+        "invitation_status": "pending",
+        "invitation_expires_at": invitation_expires_at,
+        "invited_by": user.user.id
+    }
+    
+    # Insert invitation record
+    invitation_result = supabase_admin.table("school_admin_invitations").insert(invitation_data).execute()
+    
+    if not invitation_result.data:
+        raise HTTPException(status_code=500, detail="Failed to create invitation record")
+    
+    # Send invitation email
+    try:
+        # Build invitation URL
+        from app.config import settings
+        import os
+        frontend_url = (
+            getattr(settings, "frontend_schools_url", None)
+            or os.getenv("FRONTEND_SCHOOLS_URL")
+            or os.getenv("frontend_schools_url")
+        )
+        
+        if frontend_url:
+            base_url = frontend_url.rstrip('/')
+            invitation_url = f"{base_url}/register?token={invitation_token}&school_id={school_id}"
+        else:
+            invitation_url = f"#token={invitation_token}&school_id={school_id}"
+        
+        inviter_text = f" by {inviter_email}" if inviter_email else ""
+        subject = f"Invitation to administer {school_name} on EigoKit"
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: #3B82F6; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }}
+                .content {{ background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }}
+                .button {{ display: inline-block; padding: 12px 24px; background: #3B82F6; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; }}
+                .footer {{ text-align: center; margin-top: 20px; color: #6b7280; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>EigoKit School Admin Invitation</h1>
+                </div>
+                <div class="content">
+                    <p>Hello {name},</p>
+                    <p>You have been invited{inviter_text} to administer <strong>{school_name}</strong> on EigoKit.</p>
+                    <p>EigoKit is an English learning platform that helps schools manage students, teachers, and classes.</p>
+                    <p style="text-align: center;">
+                        <a href="{invitation_url}" class="button">Accept Invitation</a>
+                    </p>
+                    <p>Or copy and paste this link into your browser:</p>
+                    <p style="word-break: break-all; color: #6b7280; font-size: 14px;">{invitation_url}</p>
+                    <p>This invitation link will expire in 7 days.</p>
+                    <p>If you didn't expect this invitation, you can safely ignore this email.</p>
+                </div>
+                <div class="footer">
+                    <p>© EigoKit - English Learning Platform</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        text_content = f"""
+        Hello {name},
+        
+        You have been invited{inviter_text} to administer {school_name} on EigoKit.
+        
+        EigoKit is an English learning platform that helps schools manage students, teachers, and classes.
+        
+        Accept your invitation by clicking this link:
+        {invitation_url}
+        
+        This invitation link will expire in 7 days.
+        
+        If you didn't expect this invitation, you can safely ignore this email.
+        
+        © EigoKit - English Learning Platform
+        """
+        
+        if email_service.resend:
+            emails = email_service.resend.Emails()
+            params = {
+                "from": email_service.from_email,
+                "to": [email],
+                "subject": subject,
+                "html": html_content,
+                "text": text_content,
+            }
+            emails.send(params)
+            print(f"School admin invitation email sent to {email}")
+        else:
+            print(f"Email service not available. Would send invitation to {email}")
+            print(f"Invitation URL: {invitation_url}")
+            print(f"Token: {invitation_token}")
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Error sending invitation email to {email}: {error_msg}")
+        # Don't fail the request if email fails
+    
+    return {
+        "message": "Invitation sent successfully",
+        "email": email,
+        "invitation_id": invitation_result.data[0]["id"],
+        "invitation_token": invitation_token  # Include for manual sharing if needed
+    }
+
+
+@router.put("/{school_id}/admins/{admin_id}")
+async def update_school_admin(
+    school_id: str,
+    admin_id: str,
+    name: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
+):
+    """Update a school admin's information"""
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Verify admin belongs to school
+    admin_check = supabase_admin.table("users").select("school_id, role, email").eq("id", admin_id).eq("school_id", school_id).eq("role", "school_admin").single().execute()
+    if not admin_check.data:
+        raise HTTPException(status_code=404, detail="Admin not found for this school")
+    
+    # Don't allow updating email if it would conflict with another user
+    if email and email != admin_check.data.get("email"):
+        existing_user = supabase_admin.table("users").select("id").eq("email", email).maybe_single().execute()
+        if existing_user.data and existing_user.data.get("id") != admin_id:
+            raise HTTPException(status_code=400, detail="Email is already in use by another user")
+    
+    # Update user email if provided
+    if email:
+        supabase_admin.table("users").update({"email": email}).eq("id", admin_id).execute()
+    
+    # Update invitation record with new name if provided
+    if name:
+        # Update the most recent invitation for this admin
+        invitation_result = supabase_admin.table("school_admin_invitations").select("id").eq("email", admin_check.data.get("email")).eq("school_id", school_id).order("created_at", desc=True).limit(1).execute()
+        if invitation_result.data and len(invitation_result.data) > 0:
+            supabase_admin.table("school_admin_invitations").update({"name": name}).eq("id", invitation_result.data[0]["id"]).execute()
+    
+    return {"message": "Admin updated successfully"}
+
+
+@router.delete("/{school_id}/admins/{admin_id}")
+async def delete_school_admin(
+    school_id: str,
+    admin_id: str,
+    user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
+):
+    """Remove a school admin from the school, or delete a pending invitation"""
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check if admin_id is a UUID (user ID) or invitation ID
+    # First, try to find it as a user ID
+    admin_check = supabase_admin.table("users").select("school_id, role").eq("id", admin_id).eq("school_id", school_id).eq("role", "school_admin").maybe_single().execute()
+    
+    if admin_check.data:
+        # It's an existing user - remove them from school
+        # Don't allow deleting yourself
+        if admin_id == user.user.id:
+            raise HTTPException(status_code=400, detail="You cannot remove yourself from the school")
+        
+        # Remove admin from school (set school_id to null and change role)
+        supabase_admin.table("users").update({
+            "school_id": None,
+            "role": "teacher"  # Change to teacher role as default
+        }).eq("id", admin_id).execute()
+        
+        return {"message": "Admin removed from school successfully"}
+    else:
+        # Check if it's a pending invitation ID
+        invitation_check = supabase_admin.table("school_admin_invitations").select("id").eq("id", admin_id).eq("school_id", school_id).eq("invitation_status", "pending").maybe_single().execute()
+        
+        if invitation_check.data:
+            # Delete the pending invitation
+            supabase_admin.table("school_admin_invitations").delete().eq("id", admin_id).execute()
+            return {"message": "Pending invitation deleted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Admin or invitation not found for this school")
+
+
+@router.post("/{school_id}/admins/{admin_id}/resend-invitation")
+async def resend_school_admin_invitation(
+    school_id: str,
+    admin_id: str,
+    user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
+):
+    """Resend invitation email to a school admin or pending invitation"""
+    import secrets
+    from datetime import datetime, timedelta
+    from app.services.email import email_service
+    
+    # Verify user's school_id matches
+    user_data = supabase_admin.table("users").select("school_id, email").eq("id", user.user.id).single().execute()
+    if not user_data.data or user_data.data.get("school_id") != school_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check if admin_id is a user ID or invitation ID
+    admin_check = supabase_admin.table("users").select("email").eq("id", admin_id).eq("school_id", school_id).eq("role", "school_admin").maybe_single().execute()
+    
+    if admin_check.data:
+        # It's an existing user - get their email and find invitation
+        admin_email = admin_check.data.get("email")
+        invitation_result = supabase_admin.table("school_admin_invitations").select("*").eq("email", admin_email).eq("school_id", school_id).order("created_at", desc=True).limit(1).execute()
+    else:
+        # Check if it's a pending invitation ID
+        invitation_result = supabase_admin.table("school_admin_invitations").select("*").eq("id", admin_id).eq("school_id", school_id).eq("invitation_status", "pending").execute()
+    
+    if not invitation_result.data or len(invitation_result.data) == 0:
+        raise HTTPException(status_code=404, detail="No invitation found for this admin")
+    
+    invitation = invitation_result.data[0]
+    admin_email = invitation.get("email")
+    
+    # Get school name
+    school = supabase_admin.table("schools").select("name").eq("id", school_id).single().execute()
+    school_name = school.data.get("name", "the school") if school.data else "the school"
+    
+    # Generate new invitation token
+    invitation_token = secrets.token_urlsafe(32)
+    invitation_expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+    
+    # Update invitation
+    supabase_admin.table("school_admin_invitations").update({
+        "invitation_token": invitation_token,
+        "invitation_sent_at": datetime.utcnow().isoformat(),
+        "invitation_status": "pending",
+        "invitation_expires_at": invitation_expires_at
+    }).eq("id", invitation["id"]).execute()
+    
+    # Send invitation email
+    try:
+        from app.config import settings
+        import os
+        frontend_url = (
+            getattr(settings, "frontend_schools_url", None)
+            or os.getenv("FRONTEND_SCHOOLS_URL")
+            or os.getenv("frontend_schools_url")
+        )
+        
+        if frontend_url:
+            base_url = frontend_url.rstrip('/')
+            invitation_url = f"{base_url}/register?token={invitation_token}&school_id={school_id}"
+        else:
+            invitation_url = f"#token={invitation_token}&school_id={school_id}"
+        
+        inviter_email = user_data.data.get("email", "")
+        inviter_text = f" by {inviter_email}" if inviter_email else ""
+        subject = f"Invitation to administer {school_name} on EigoKit"
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: #3B82F6; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }}
+                .content {{ background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }}
+                .button {{ display: inline-block; padding: 12px 24px; background: #3B82F6; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; }}
+                .footer {{ text-align: center; margin-top: 20px; color: #6b7280; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>EigoKit School Admin Invitation</h1>
+                </div>
+                <div class="content">
+                    <p>Hello {invitation.get('name', 'there')},</p>
+                    <p>You have been invited{inviter_text} to administer <strong>{school_name}</strong> on EigoKit.</p>
+                    <p>EigoKit is an English learning platform that helps schools manage students, teachers, and classes.</p>
+                    <p style="text-align: center;">
+                        <a href="{invitation_url}" class="button">Accept Invitation</a>
+                    </p>
+                    <p>Or copy and paste this link into your browser:</p>
+                    <p style="word-break: break-all; color: #6b7280; font-size: 14px;">{invitation_url}</p>
+                    <p>This invitation link will expire in 7 days.</p>
+                    <p>If you didn't expect this invitation, you can safely ignore this email.</p>
+                </div>
+                <div class="footer">
+                    <p>© EigoKit - English Learning Platform</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        text_content = f"""
+        Hello {invitation.get('name', 'there')},
+        
+        You have been invited{inviter_text} to administer {school_name} on EigoKit.
+        
+        EigoKit is an English learning platform that helps schools manage students, teachers, and classes.
+        
+        Accept your invitation by clicking this link:
+        {invitation_url}
+        
+        This invitation link will expire in 7 days.
+        
+        If you didn't expect this invitation, you can safely ignore this email.
+        
+        © EigoKit - English Learning Platform
+        """
+        
+        if email_service.resend:
+            emails = email_service.resend.Emails()
+            params = {
+                "from": email_service.from_email,
+                "to": [admin_email],
+                "subject": subject,
+                "html": html_content,
+                "text": text_content,
+            }
+            emails.send(params)
+            print(f"School admin invitation email resent to {admin_email}")
+            return {
+                "message": "Invitation email resent successfully",
+                "invitation_sent": True,
+                "invitation_token": invitation_token
+            }
+        else:
+            print(f"Email service not available. Would resend invitation to {admin_email}")
+            return {
+                "message": "Invitation token updated, but email service is not configured",
+                "invitation_sent": False,
+                "invitation_token": invitation_token
+            }
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Error resending invitation email to {admin_email}: {error_msg}")
+        return {
+            "message": f"Invitation token updated, but email failed to send: {error_msg}",
+            "invitation_sent": False,
+            "error": "email_exception",
+            "error_details": error_msg
+        }
+
