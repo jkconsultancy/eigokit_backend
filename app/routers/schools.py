@@ -43,7 +43,8 @@ async def get_school_teachers(school_id: str):
             "invitation_status": ts.get("invitation_status"),  # Key field: pending, accepted, expired
             "invitation_token": ts.get("invitation_token"),
             "invitation_sent_at": ts.get("invitation_sent_at"),
-            "invitation_expires_at": ts.get("invitation_expires_at")
+            "invitation_expires_at": ts.get("invitation_expires_at"),
+            "is_active": ts.get("is_active", True)  # Default to True for backward compatibility
         }
         teachers.append(merged_teacher)
     
@@ -152,6 +153,7 @@ async def update_student(
     name: Optional[str] = Form(None),
     class_id: Optional[str] = Form(None),
     icon_sequence: Optional[str] = Form(None),
+    is_active: Optional[str] = Form(None),
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Update a student"""
@@ -185,6 +187,9 @@ async def update_student(
                 update_data["icon_sequence"] = icon_array
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid icon_sequence format. Use comma-separated integers.")
+    if is_active is not None:
+        is_active_bool = is_active.lower() == 'true' if isinstance(is_active, str) else bool(is_active)
+        update_data["is_active"] = is_active_bool
     
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -213,7 +218,7 @@ async def delete_student(school_id: str, student_id: str, user = Depends(require
 @router.get("/{school_id}/classes")
 async def get_school_classes(school_id: str):
     """Get all classes for a school"""
-    classes = supabase.table("classes").select("*, teachers(name, email), school_locations(name)").eq("school_id", school_id).execute()
+    classes = supabase_admin.table("classes").select("*, teachers(name, email), school_locations(name)").eq("school_id", school_id).execute()
     return {"classes": classes.data}
 
 
@@ -384,7 +389,7 @@ async def resend_teacher_invitation(school_id: str, teacher_id: str, user = Depe
 
 
 @router.put("/{school_id}/teachers/{teacher_id}")
-async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = Form(None), email: Optional[str] = Form(None), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
+async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = Form(None), email: Optional[str] = Form(None), is_active: Optional[str] = Form(None), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Update a teacher"""
     # Verify user's school_id matches
     user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
@@ -392,7 +397,7 @@ async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = 
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify teacher belongs to school
-    teacher_school_check = supabase_admin.table("teacher_schools").select("teacher_id").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
+    teacher_school_check = supabase_admin.table("teacher_schools").select("id").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
     if not teacher_school_check.data:
         raise HTTPException(status_code=404, detail="Teacher not found for this school")
     
@@ -402,12 +407,30 @@ async def update_teacher(school_id: str, teacher_id: str, name: Optional[str] = 
     if email is not None:
         update_data["email"] = email
     
-    if not update_data:
+    # Update teacher record (affects all schools)
+    if update_data:
+        result = supabase_admin.table("teachers").update(update_data).eq("id", teacher_id).execute()
+    
+    # Update is_active in teacher_schools (per-school status)
+    if is_active is not None:
+        is_active_bool = is_active.lower() == 'true' if isinstance(is_active, str) else bool(is_active)
+        supabase_admin.table("teacher_schools").update({"is_active": is_active_bool}).eq("teacher_id", teacher_id).eq("school_id", school_id).execute()
+    
+    if not update_data and is_active is None:
         raise HTTPException(status_code=400, detail="No fields to update")
     
-    # Update teacher record (affects all schools)
-    result = supabase_admin.table("teachers").update(update_data).eq("id", teacher_id).execute()
-    return {"message": "Teacher updated", "teacher": result.data[0]}
+    # Get updated teacher data
+    teacher_result = supabase_admin.table("teachers").select("*").eq("id", teacher_id).single().execute()
+    teacher_school_result = supabase_admin.table("teacher_schools").select("*").eq("teacher_id", teacher_id).eq("school_id", school_id).single().execute()
+    
+    merged_teacher = {
+        **teacher_result.data[0],
+        "teacher_school_id": teacher_school_result.data[0].get("id"),
+        "is_active": teacher_school_result.data[0].get("is_active", True),
+        "invitation_status": teacher_school_result.data[0].get("invitation_status")
+    }
+    
+    return {"message": "Teacher updated", "teacher": merged_teacher}
 
 
 @router.delete("/{school_id}/teachers/{teacher_id}")
@@ -461,7 +484,7 @@ async def add_class(school_id: str, name: str = Form(...), teacher_id: str = For
 
 
 @router.put("/{school_id}/classes/{class_id}")
-async def update_class(school_id: str, class_id: str, name: Optional[str] = Form(None), teacher_id: Optional[str] = Form(None), location_id: Optional[str] = Form(None), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
+async def update_class(school_id: str, class_id: str, name: Optional[str] = Form(None), teacher_id: Optional[str] = Form(None), location_id: Optional[str] = Form(None), is_active: Optional[str] = Form(None), user = Depends(require_role([UserRole.SCHOOL_ADMIN]))):
     """Update a class"""
     # Verify user's school_id matches
     user_data = supabase_admin.table("users").select("school_id").eq("id", user.user.id).single().execute()
@@ -491,6 +514,9 @@ async def update_class(school_id: str, class_id: str, name: Optional[str] = Form
             if not location_check.data:
                 raise HTTPException(status_code=404, detail="Location not found")
             update_data["location_id"] = location_id
+    if is_active is not None:
+        is_active_bool = is_active.lower() == 'true' if isinstance(is_active, str) else bool(is_active)
+        update_data["is_active"] = is_active_bool
     
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -718,34 +744,52 @@ async def delete_location(school_id: str, location_id: str, user = Depends(requi
 @router.get("/{school_id}/dashboard")
 async def get_school_dashboard(school_id: str):
     """Get school dashboard metrics"""
-    # Get counts
-    teachers = supabase.table("teacher_schools").select("teacher_id").eq("school_id", school_id).execute()
-    classes = supabase.table("classes").select("id").eq("school_id", school_id).execute()
-    class_ids = [c["id"] for c in classes.data]
-    students = supabase.table("students").select("id").in_("class_id", class_ids).execute()
+    import logging
+    logger = logging.getLogger(__name__)
     
-    # Get survey completion
-    student_ids = [s["id"] for s in students.data]
-    surveys = supabase.table("survey_responses").select("id").in_("student_id", student_ids).execute()
-    
-    # Get game engagement
-    games = supabase.table("game_sessions").select("id").in_("student_id", student_ids).execute()
-    
-    return {
-        "school_level": {
-            "active_students": len(students.data),
-            "survey_completion_rate": len(surveys.data) / max(len(students.data), 1) * 100 if students.data else 0,
-            "game_engagement": len(games.data)
-        },
-        "teacher_level": {
-            "total_teachers": len(teachers.data),
-            "teachers": [{"id": t["teacher_id"]} for t in teachers.data]
-        },
-        "class_level": {
-            "total_classes": len(classes.data),
-            "classes": classes.data
+    try:
+        # Try to get active counts (if is_active column exists)
+        try:
+            active_teachers = supabase_admin.table("teacher_schools").select("teacher_id").eq("school_id", school_id).eq("is_active", True).execute()
+            active_classes = supabase_admin.table("classes").select("id").eq("school_id", school_id).eq("is_active", True).execute()
+            active_class_ids = [c["id"] for c in active_classes.data] if active_classes.data else []
+            if active_class_ids:
+                active_students = supabase_admin.table("students").select("id").in_("class_id", active_class_ids).eq("is_active", True).execute()
+            else:
+                active_students = type('Response', (), {'data': []})()
+            active_locations = supabase_admin.table("school_locations").select("id").eq("school_id", school_id).eq("is_active", True).execute()
+        except Exception as e:
+            # Fallback: if is_active column doesn't exist, get all (treat all as active)
+            logger.warning(f"is_active column may not exist, falling back to all records: {str(e)}")
+            active_teachers = supabase_admin.table("teacher_schools").select("teacher_id").eq("school_id", school_id).execute()
+            active_classes = supabase_admin.table("classes").select("id").eq("school_id", school_id).execute()
+            active_class_ids = [c["id"] for c in active_classes.data] if active_classes.data else []
+            if active_class_ids:
+                active_students = supabase_admin.table("students").select("id").in_("class_id", active_class_ids).execute()
+            else:
+                active_students = type('Response', (), {'data': []})()
+            active_locations = supabase_admin.table("school_locations").select("id").eq("school_id", school_id).execute()
+        
+        return {
+            "school_level": {
+                "active_students": len(getattr(active_students, 'data', [])),
+                "active_locations": len(getattr(active_locations, 'data', [])),
+                "active_teachers": len(getattr(active_teachers, 'data', [])),
+                "active_classes": len(getattr(active_classes, 'data', []))
+            }
         }
-    }
+    except Exception as e:
+        # Log the error and return a safe default
+        logger.error(f"Error getting dashboard metrics: {str(e)}", exc_info=True)
+        # Return zeros as fallback
+        return {
+            "school_level": {
+                "active_students": 0,
+                "active_locations": 0,
+                "active_teachers": 0,
+                "active_classes": 0
+            }
+        }
 
 
 @router.get("/{school_id}")
@@ -795,7 +839,12 @@ async def get_school_admins(school_id: str, user = Depends(require_role([UserRol
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Get all users with school_admin role for this school (accepted admins)
-    users_result = supabase_admin.table("users").select("id, email, created_at").eq("school_id", school_id).eq("role", "school_admin").order("created_at").execute()
+    # Try to get is_active if column exists, otherwise fall back to basic fields
+    try:
+        users_result = supabase_admin.table("users").select("id, email, created_at, is_active").eq("school_id", school_id).eq("role", "school_admin").order("created_at").execute()
+    except Exception:
+        # Fallback if is_active column doesn't exist yet
+        users_result = supabase_admin.table("users").select("id, email, created_at").eq("school_id", school_id).eq("role", "school_admin").order("created_at").execute()
     
     # Get all pending invitations for this school
     pending_invitations_result = supabase_admin.table("school_admin_invitations").select("*").eq("school_id", school_id).eq("invitation_status", "pending").order("created_at", desc=True).execute()
@@ -831,7 +880,8 @@ async def get_school_admins(school_id: str, user = Depends(require_role([UserRol
             "name": name,
             "created_at": user_record["created_at"],
             "invitation_status": invitation_status or "accepted",  # Default to accepted if no invitation record
-            "invitation_expires_at": invitation_expires_at
+            "invitation_expires_at": invitation_expires_at,
+            "is_active": user_record.get("is_active", True)  # Default to True for backward compatibility
         }
         admins.append(admin_data)
     
@@ -1040,6 +1090,7 @@ async def update_school_admin(
     admin_id: str,
     name: Optional[str] = Form(None),
     email: Optional[str] = Form(None),
+    is_active: Optional[str] = Form(None),
     user = Depends(require_role([UserRole.SCHOOL_ADMIN]))
 ):
     """Update a school admin's information"""
@@ -1059,9 +1110,16 @@ async def update_school_admin(
         if existing_user.data and existing_user.data.get("id") != admin_id:
             raise HTTPException(status_code=400, detail="Email is already in use by another user")
     
+    update_data = {}
     # Update user email if provided
     if email:
-        supabase_admin.table("users").update({"email": email}).eq("id", admin_id).execute()
+        update_data["email"] = email
+    if is_active is not None:
+        is_active_bool = is_active.lower() == 'true' if isinstance(is_active, str) else bool(is_active)
+        update_data["is_active"] = is_active_bool
+    
+    if update_data:
+        supabase_admin.table("users").update(update_data).eq("id", admin_id).execute()
     
     # Update invitation record with new name if provided
     if name:
@@ -1069,6 +1127,9 @@ async def update_school_admin(
         invitation_result = supabase_admin.table("school_admin_invitations").select("id").eq("email", admin_check.data.get("email")).eq("school_id", school_id).order("created_at", desc=True).limit(1).execute()
         if invitation_result.data and len(invitation_result.data) > 0:
             supabase_admin.table("school_admin_invitations").update({"name": name}).eq("id", invitation_result.data[0]["id"]).execute()
+    
+    if not update_data and not name:
+        raise HTTPException(status_code=400, detail="No fields to update")
     
     return {"message": "Admin updated successfully"}
 
