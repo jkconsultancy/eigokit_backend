@@ -11,22 +11,86 @@ router = APIRouter()
 
 @router.get("/schools")
 async def get_schools():
-    """Get list of all schools for student login selection"""
+    """Get list of all active schools for student login selection"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Step 1: Get all schools with relevant fields
     try:
-        schools = supabase.table("schools").select("id, name, password_icons").execute()
+        all_schools_response = supabase.table("schools").select("id, name, password_icons, is_active, account_status").execute()
+        all_schools = all_schools_response.data or []
+        logger.info(f"Fetched {len(all_schools)} total schools from database")
     except Exception as e:
-        # Check if the error is about missing column
         error_msg = str(e).lower()
         if "password_icons" in error_msg and ("does not exist" in error_msg or "column" in error_msg):
             raise HTTPException(
                 status_code=500,
                 detail="Database migration required: password_icons column missing. Please run migrations/002_add_school_password_icons.sql"
             )
-        raise
+        # If is_active column doesn't exist, try without it
+        try:
+            all_schools_response = supabase.table("schools").select("id, name, password_icons, account_status").execute()
+            all_schools = all_schools_response.data or []
+            logger.info(f"Fetched {len(all_schools)} total schools (without is_active column)")
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"Failed to load schools: {str(e2)}")
     
-    # For each school, ensure it has password icons set, and return icon details
+    # Step 2: Filter to ONLY active schools - ULTRA STRICT filtering
+    active_schools = []
+    
+    # Determine if is_active column exists by checking if it's in the first school's keys
+    column_exists = len(all_schools) > 0 and "is_active" in all_schools[0]
+    
+    logger.info(f"is_active column exists: {column_exists}")
+    
+    for school in all_schools:
+        school_id = school.get("id")
+        school_name = school.get("name", "Unknown")
+        is_active = school.get("is_active")
+        account_status = school.get("account_status", "")
+        
+        # ULTRA STRICT RULE: School is included ONLY if:
+        #   Case 1: is_active column EXISTS -> is_active MUST be True AND account_status != 'suspended'
+        #   Case 2: is_active column DOESN'T EXIST -> account_status != 'suspended' (fallback only)
+        should_include = False
+        
+        if column_exists:
+            # Column exists - ONLY include if is_active is EXPLICITLY True
+            # Reject: None, False, or any other value
+            if is_active is True:
+                # Also check account_status as safety
+                if account_status != "suspended":
+                    should_include = True
+                    logger.info(f"✓ School '{school_name}' (id: {school_id}): INCLUDED - is_active=True, account_status='{account_status}'")
+                else:
+                    logger.info(f"✗ School '{school_name}' (id: {school_id}): EXCLUDED - is_active=True but account_status='suspended'")
+            else:
+                logger.info(f"✗ School '{school_name}' (id: {school_id}): EXCLUDED - is_active={is_active} (must be True)")
+        else:
+            # Column doesn't exist - fallback to account_status only
+            if account_status != "suspended":
+                should_include = True
+                logger.info(f"✓ School '{school_name}' (id: {school_id}): INCLUDED - is_active column missing, account_status='{account_status}'")
+            else:
+                logger.info(f"✗ School '{school_name}' (id: {school_id}): EXCLUDED - account_status='suspended'")
+        
+        if should_include:
+            active_schools.append(school)
+    
+    logger.info(f"FILTERING RESULT: {len(all_schools)} total schools -> {len(active_schools)} active schools")
+    
+    # CRITICAL: Final safety check - ensure we're only returning active schools
+    if len(active_schools) == len(all_schools) and column_exists:
+        logger.error(f"ERROR: All schools passed filter! This should not happen if is_active column exists.")
+        # Emergency re-filter: only include schools with is_active=True
+        emergency_filtered = [s for s in active_schools if s.get("is_active") is True and s.get("account_status") != "suspended"]
+        if len(emergency_filtered) != len(active_schools):
+            logger.error(f"EMERGENCY FILTERING APPLIED: {len(active_schools)} -> {len(emergency_filtered)}")
+            active_schools = emergency_filtered
+    
+    # Step 3: Process active schools and return icon details
     result = []
-    for school in schools.data or []:
+    for school in active_schools:
         password_icon_ids = school.get("password_icons")
         
         # If school doesn't have password icons, generate them

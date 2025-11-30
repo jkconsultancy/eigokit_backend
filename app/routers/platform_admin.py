@@ -31,11 +31,15 @@ async def get_all_schools(user = Depends(require_role([UserRole.PLATFORM_ADMIN])
 @router.post("/schools")
 async def create_school(name: str, contact_info: Optional[str] = None, account_status: str = "trial", subscription_tier: str = "basic", user = Depends(require_role([UserRole.PLATFORM_ADMIN]))):
     """Create a new school"""
+    # Set is_active based on account_status: suspended schools are inactive, others are active
+    is_active = account_status != "suspended"
+    
     school_data = {
         "name": name,
         "contact_info": contact_info,
         "account_status": account_status,
-        "subscription_tier": subscription_tier
+        "subscription_tier": subscription_tier,
+        "is_active": is_active
     }
     
     # Use admin client to bypass RLS (we've already verified user is platform admin)
@@ -67,14 +71,34 @@ async def get_school_details(school_id: str, user = Depends(require_role([UserRo
 
 @router.put("/schools/{school_id}/status")
 async def update_school_status(school_id: str, status: str, user = Depends(require_role([UserRole.PLATFORM_ADMIN]))):
-    """Update school account status"""
+    """Update school account status and is_active flag"""
     allowed_statuses = ["active", "suspended", "trial"]
     if status not in allowed_statuses:
         raise HTTPException(status_code=400, detail=f"Status must be one of {allowed_statuses}")
     
+    # Determine is_active based on status
+    # Suspended schools should be inactive, active and trial schools should be active
+    is_active = status != "suspended"
+    
     # Use admin client to bypass RLS
-    supabase_admin.table("schools").update({"account_status": status}).eq("id", school_id).execute()
+    supabase_admin.table("schools").update({
+        "account_status": status,
+        "is_active": is_active
+    }).eq("id", school_id).execute()
     return {"message": f"School status updated to {status}"}
+
+
+@router.delete("/schools/{school_id}")
+async def delete_school(school_id: str, user = Depends(require_role([UserRole.PLATFORM_ADMIN]))):
+    """Delete a school and all associated data"""
+    # Verify school exists
+    school = supabase_admin.table("schools").select("id, name").eq("id", school_id).single().execute()
+    if not school.data:
+        raise HTTPException(status_code=404, detail="School not found")
+    
+    # Delete the school (cascade deletes will handle related data)
+    supabase_admin.table("schools").delete().eq("id", school_id).execute()
+    return {"message": f"School '{school.data['name']}' deleted successfully"}
 
 
 @router.get("/payments")

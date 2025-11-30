@@ -150,6 +150,20 @@ The API will be available at `http://localhost:8000`
 
 API documentation (Swagger UI) will be available at `http://localhost:8000/docs`
 
+### Generating OpenAPI Specification
+
+To generate the OpenAPI YAML file:
+
+```bash
+python generate_openapi.py
+```
+
+This will create `openapi.yaml` in the root directory with the complete API specification. The file can be used for:
+- API documentation
+- Client SDK generation
+- API testing tools
+- Importing into API management platforms
+
 ## Running Tests
 
 The backend includes unit tests using `pytest`. Test dependencies are included in `requirements.txt`.
@@ -361,9 +375,41 @@ This backend can be deployed to services like:
 - Railway
 - Fly.io
 - Heroku
+- LeapCell
 - AWS/GCP/Azure
 
 Make sure to set environment variables in your deployment platform.
+
+### Deploying to LeapCell
+
+1. **Create a new project** on LeapCell and connect your repository
+
+2. **Set environment variables** in LeapCell dashboard:
+   - `SUPABASE_PROJECT_URL` - Your Supabase project URL
+   - `SUPABASE_ANON_KEY` - Your Supabase anonymous key
+   - `SUPABASE_SERVICE_ROLE_KEY` - Your Supabase service role key
+   - `RESEND_API_KEY` - (Optional) For email invitations
+   - `RESEND_FROM_EMAIL` - (Optional) Email sender address
+   - `FRONTEND_ADMINS_URL` - (Optional) Platform admin frontend URL
+   - `FRONTEND_SCHOOLS_URL` - (Optional) School admin frontend URL
+   - `FRONTEND_TEACHERS_URL` - (Optional) Teacher frontend URL
+
+3. **Configure the start command**:
+   ```
+   uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}
+   ```
+   
+   Or if LeapCell uses a fixed port:
+   ```
+   uvicorn app.main:app --host 0.0.0.0 --port 8080
+   ```
+
+4. **Set Python version** (if available):
+   - Python 3.12 (recommended) or 3.11
+
+5. **Deploy**: Push your code or trigger deployment from LeapCell dashboard
+
+**Note**: Make sure your Supabase database schema is set up (run `schema.sql` in Supabase SQL Editor) before deploying.
 
 ## Email Service Setup
 
